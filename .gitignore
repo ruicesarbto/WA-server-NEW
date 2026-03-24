@@ -1,0 +1,48 @@
+# Dependencies
+node_modules/
+frontend/node_modules/
+yarn.lock
+package-lock.json
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Build
+dist/
+build/
+out/
+.next/
+frontend/.next/
+
+# Runtime
+sessions/
+contacts/
+conversations/
+flow-json/
+public/media/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+__MACOSX/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+
+# OS
+Thumbs.db
+
+# Backups e arquivos temporários
+*.zip
+*.bak
+*.tmp
+req_search.txt

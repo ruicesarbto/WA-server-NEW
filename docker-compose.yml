@@ -1,0 +1,82 @@
+version: "3.9"
+
+services:
+  # ✅ DATABASE - PostgreSQL Only
+  postgres:
+    image: postgres:15-alpine
+    container_name: chat_score_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DBUSER:-chat_score}
+      POSTGRES_PASSWORD: ${DBPASS:-postgrespassword}
+      POSTGRES_DB: ${DBNAME:-chat_score_pg}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DBUSER:-chat_score} -d ${DBNAME:-chat_score_pg}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - chat_network
+
+  # 🔧 BACKEND - Express
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: chat_score_backend
+    restart: unless-stopped
+    depends_on:
+      - postgres
+    ports:
+      - "8001:8001"
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+      HOST: 0.0.0.0
+      PORT: 8001
+      DBHOST: postgres
+      DBNAME: ${DBNAME:-chat_score_pg}
+      DBUSER: ${DBUSER:-chat_score}
+      DBPASS: ${DBPASS:-postgrespassword}
+      DBPORT: 5432
+      JWTKEY: ${JWTKEY:-NCRUp5hKovUAcZd9OwIw0BCKmjZj9JxpNCRUp5hKovUAcZd9OwIw0BCKmjZj9JxpNCRUp5hKovUAcZd9OwIw0BCKmjZj9Jxp}
+      APP_NAME: ${APP_NAME:-ScoreChat}
+      FRONTENDURI: ${FRONTENDURI:-http://localhost:3000}
+      BACKURI: ${BACKURI:-http://localhost:8001}
+      STRIPE_LANG: en
+    volumes:
+      - ./sessions:/app/sessions
+      - ./public/media:/app/public/media
+      - ./contacts:/app/contacts
+      - ./conversations:/app/conversations
+      - ./flow-json:/app/flow-json
+    networks:
+      - chat_network
+
+  # 🎨 FRONTEND - Next.js
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: chat_score_frontend
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8001/api}
+      NEXT_PUBLIC_SOCKET_URL: ${NEXT_PUBLIC_SOCKET_URL:-http://localhost:8001}
+    depends_on:
+      - backend
+    networks:
+      - chat_network
+
+networks:
+  chat_network:
+    driver: bridge
+
+volumes:
+  postgres_data:
