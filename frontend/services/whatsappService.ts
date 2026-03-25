@@ -43,8 +43,8 @@ export const whatsappService = {
         return api.getWhatsAppGroups(activeInstance);
     },
 
-    async getHistory(phone: string, instance?: string, remoteJid?: string, chatId?: string) {
-        return api.getWhatsAppHistory(phone, 50, 0, instance, remoteJid, chatId);
+    async getHistory(phone: string, instance?: string, remoteJid?: string, chatId?: string, cursor?: string | null) {
+        return api.getWhatsAppHistory(phone, 50, 0, instance, remoteJid, chatId, cursor);
     },
 
     // ─── MESSAGING ───

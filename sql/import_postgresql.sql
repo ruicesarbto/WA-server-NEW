@@ -1,6 +1,15 @@
--- PostgreSQL Schema Migration
+-- ============================================================
+-- PostgreSQL Schema — Gerado por auditoria Backend vs DB
+-- 100% compatível com todo o código Node.js do backend
+-- ============================================================
 
--- Drop existing tables if they exist (Clean start)
+-- Drop all tables (clean start)
+DROP TABLE IF EXISTS baileys_auth CASCADE;
+DROP TABLE IF EXISTS chat_pinned CASCADE;
+DROP TABLE IF EXISTS chat_tag CASCADE;
+DROP TABLE IF EXISTS chat_note CASCADE;
+DROP TABLE IF EXISTS poll_votes CASCADE;
+DROP TABLE IF EXISTS templet CASCADE;
 DROP TABLE IF EXISTS rooms CASCADE;
 DROP TABLE IF EXISTS warmer_script CASCADE;
 DROP TABLE IF EXISTS warmers CASCADE;
@@ -14,7 +23,7 @@ DROP TABLE IF EXISTS broadcast_log CASCADE;
 DROP TABLE IF EXISTS broadcast CASCADE;
 DROP TABLE IF EXISTS admin CASCADE;
 DROP TABLE IF EXISTS "user" CASCADE;
-DROP TABLE IF EXISTS "instance" CASCADE;
+DROP TABLE IF EXISTS instance CASCADE;
 DROP TABLE IF EXISTS plan CASCADE;
 DROP TABLE IF EXISTS orders CASCADE;
 DROP TABLE IF EXISTS partners CASCADE;
@@ -26,7 +35,7 @@ DROP TABLE IF EXISTS web_public CASCADE;
 DROP TABLE IF EXISTS smtp CASCADE;
 DROP TABLE IF EXISTS testimonial CASCADE;
 
--- admin
+-- ─── admin ───────────────────────────────────────────────────
 CREATE TABLE admin (
   "id" SERIAL PRIMARY KEY,
   "uid" VARCHAR(999),
@@ -39,7 +48,63 @@ CREATE TABLE admin (
 INSERT INTO admin ("id", "uid", "email", "role", "password", "createdAt") VALUES
 (1, '5QnEKMP7lbzObMlLJNAxdcIhNb4qYIQBX', 'admin@admin.com', 'admin', '$2b$10$OUmfMxfNYQOw4yGtYWzQV./vpMHKYDXzkn6q2FK58hO8uzYuqdFcq', '2024-05-05 08:46:13');
 
--- broadcast
+-- ─── user ────────────────────────────────────────────────────
+CREATE TABLE "user" (
+  "id" SERIAL PRIMARY KEY,
+  "uid" VARCHAR(999),
+  "name" VARCHAR(999),
+  "email" VARCHAR(999),
+  "password" VARCHAR(999),
+  "mobile" VARCHAR(999),
+  "role" VARCHAR(999) DEFAULT 'user',
+  "plan" TEXT DEFAULT '0',
+  "plan_expire" VARCHAR(999),
+  "trial" INTEGER DEFAULT 0,
+  "opened_chat_instance" VARCHAR(999) DEFAULT NULL,
+  "token" TEXT DEFAULT NULL,
+  "createdAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- ─── instance ────────────────────────────────────────────────
+CREATE TABLE instance (
+  "id" SERIAL PRIMARY KEY,
+  "uid" VARCHAR(999) DEFAULT NULL,
+  "instance_id" TEXT DEFAULT NULL,
+  "title" VARCHAR(999) DEFAULT NULL,
+  "qr" TEXT DEFAULT NULL,
+  "status" VARCHAR(999) DEFAULT NULL,
+  "webhook" VARCHAR(999) DEFAULT NULL,
+  "userData" TEXT DEFAULT NULL,
+  "jid" VARCHAR(999) DEFAULT NULL,
+  "a_status" VARCHAR(999) DEFAULT NULL,
+  "createdAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- ─── plan ────────────────────────────────────────────────────
+CREATE TABLE plan (
+  "id" SERIAL PRIMARY KEY,
+  "title" VARCHAR(999) DEFAULT NULL,
+  "price" VARCHAR(999) DEFAULT NULL,
+  "price_crosed" VARCHAR(999) DEFAULT NULL,
+  "days" VARCHAR(999) DEFAULT NULL,
+  "des" TEXT DEFAULT NULL,
+  "phonebook_contact_limit" VARCHAR(999) DEFAULT NULL,
+  "allow_chat_tags" INTEGER DEFAULT 1,
+  "allow_chat_note" INTEGER DEFAULT 1,
+  "chatbot" INTEGER DEFAULT 1,
+  "api_access" INTEGER DEFAULT 1,
+  "wa_account" VARCHAR(999) DEFAULT NULL,
+  "wa_warmer" INTEGER DEFAULT 1,
+  "createdAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+INSERT INTO plan (id, title, price, price_crosed, days, des, phonebook_contact_limit, allow_chat_tags, allow_chat_note, chatbot, api_access, wa_account, wa_warmer) VALUES
+(5, 'Everything', '39', '3999', '39', 'this plan has everything', '399', 1, 1, 1, 1, '10', 1),
+(6, 'Trial', '0', '0', '10', 'This is a trial plan', '999', 1, 1, 1, 1, '99', 1),
+(7, 'Basic', '19', '99', '30', 'this is a basic plan', '99', 1, 1, 1, 1, '1', 1);
+SELECT setval('plan_id_seq', (SELECT MAX(id) FROM plan));
+
+-- ─── broadcast ───────────────────────────────────────────────
 CREATE TABLE broadcast (
   "id" SERIAL PRIMARY KEY,
   "broadcast_id" VARCHAR(999),
@@ -56,7 +121,7 @@ CREATE TABLE broadcast (
   "createdAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
--- broadcast_log
+-- ─── broadcast_log ───────────────────────────────────────────
 CREATE TABLE broadcast_log (
   "id" SERIAL PRIMARY KEY,
   "uid" VARCHAR(999),
@@ -73,7 +138,7 @@ CREATE TABLE broadcast_log (
   "createdAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
--- chatbot
+-- ─── chatbot ─────────────────────────────────────────────────
 CREATE TABLE chatbot (
   "id" SERIAL PRIMARY KEY,
   "uid" VARCHAR(999),
@@ -83,10 +148,17 @@ CREATE TABLE chatbot (
   "flow" VARCHAR(999),
   "active" INTEGER DEFAULT 1,
   "instance_id" VARCHAR(999),
+  "group_reply" INTEGER DEFAULT 0,
+  "prevent_reply" TEXT DEFAULT NULL,
+  "ai_chatbot" INTEGER DEFAULT 0,
+  "ai_bot" TEXT DEFAULT NULL,
   "createdAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
--- chats
+-- ─── chats (legacy columns + new migration columns) ─────────
+-- NOTE: migration_001_history_engine.sql will DROP and recreate
+-- this table with the optimized schema. These legacy columns
+-- exist for compatibility with functions/x.js code path.
 CREATE TABLE chats (
   "id" SERIAL PRIMARY KEY,
   "chat_id" TEXT,
@@ -107,7 +179,7 @@ CREATE TABLE chats (
   "createdAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
--- contact
+-- ─── contact ─────────────────────────────────────────────────
 CREATE TABLE contact (
   "id" SERIAL PRIMARY KEY,
   "phonebook_id" VARCHAR(999),
@@ -117,7 +189,7 @@ CREATE TABLE contact (
   "createdAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
--- contact_form
+-- ─── contact_form ────────────────────────────────────────────
 CREATE TABLE contact_form (
   "id" SERIAL PRIMARY KEY,
   "email" VARCHAR(999),
@@ -127,7 +199,7 @@ CREATE TABLE contact_form (
   "createdAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
--- faq
+-- ─── faq ─────────────────────────────────────────────────────
 CREATE TABLE faq (
   "id" SERIAL PRIMARY KEY,
   "question" TEXT,
@@ -135,7 +207,7 @@ CREATE TABLE faq (
   "createdAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
--- flow
+-- ─── flow ────────────────────────────────────────────────────
 CREATE TABLE flow (
   "id" SERIAL PRIMARY KEY,
   "uid" VARCHAR(999),
@@ -144,16 +216,7 @@ CREATE TABLE flow (
   "createdAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
--- instance
-CREATE TABLE instance (
-  "id" SERIAL PRIMARY KEY,
-  "name" VARCHAR(999),
-  "instance_key" TEXT,
-  "uid" VARCHAR(999),
-  "createdAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
--- messages
+-- ─── messages (legacy — overridden by migration) ─────────────
 CREATE TABLE messages (
   "id" SERIAL PRIMARY KEY,
   "chat_id" TEXT,
@@ -173,7 +236,7 @@ CREATE TABLE messages (
   "createdAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
--- orders
+-- ─── orders ──────────────────────────────────────────────────
 CREATE TABLE orders (
   "id" SERIAL PRIMARY KEY,
   "uid" VARCHAR(999),
@@ -184,7 +247,7 @@ CREATE TABLE orders (
   "createdAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
--- page
+-- ─── page ────────────────────────────────────────────────────
 CREATE TABLE page (
   "id" SERIAL PRIMARY KEY,
   "slug" VARCHAR(999),
@@ -195,14 +258,14 @@ CREATE TABLE page (
   "createdAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
--- partners
+-- ─── partners ────────────────────────────────────────────────
 CREATE TABLE partners (
   "id" SERIAL PRIMARY KEY,
   "filename" VARCHAR(999),
   "createdAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
--- phonebook
+-- ─── phonebook ───────────────────────────────────────────────
 CREATE TABLE phonebook (
   "id" SERIAL PRIMARY KEY,
   "name" VARCHAR(999),
@@ -210,19 +273,7 @@ CREATE TABLE phonebook (
   "createdAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
--- plan
-CREATE TABLE plan (
-  "id" SERIAL PRIMARY KEY,
-  "price" VARCHAR(999),
-  "name" VARCHAR(999),
-  "instance_limit" VARCHAR(999),
-  "chatbot_limit" VARCHAR(999),
-  "broadcast_limit" VARCHAR(999),
-  "days" VARCHAR(999),
-  "createdAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
--- rooms
+-- ─── rooms ───────────────────────────────────────────────────
 CREATE TABLE rooms (
   "id" SERIAL PRIMARY KEY,
   "uid" VARCHAR(999),
@@ -230,7 +281,7 @@ CREATE TABLE rooms (
   "createdAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
--- smtp
+-- ─── smtp ────────────────────────────────────────────────────
 CREATE TABLE smtp (
   "id" SERIAL PRIMARY KEY,
   "host" VARCHAR(999),
@@ -240,7 +291,7 @@ CREATE TABLE smtp (
   "createdAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
--- testimonial
+-- ─── testimonial ─────────────────────────────────────────────
 CREATE TABLE testimonial (
   "id" SERIAL PRIMARY KEY,
   "title" VARCHAR(999),
@@ -250,22 +301,7 @@ CREATE TABLE testimonial (
   "createdAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
--- user
-CREATE TABLE "user" (
-  "id" SERIAL PRIMARY KEY,
-  "uid" VARCHAR(999),
-  "name" VARCHAR(999),
-  "email" VARCHAR(999),
-  "password" VARCHAR(999),
-  "mobile" VARCHAR(999),
-  "role" VARCHAR(999) DEFAULT 'user',
-  "plan" VARCHAR(999) DEFAULT '0',
-  "plan_expire" VARCHAR(999),
-  "trial" INTEGER DEFAULT 0,
-  "createdAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
--- warmer_script
+-- ─── warmer_script ───────────────────────────────────────────
 CREATE TABLE warmer_script (
   "id" SERIAL PRIMARY KEY,
   "uid" VARCHAR(999),
@@ -273,7 +309,7 @@ CREATE TABLE warmer_script (
   "createdAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
--- warmers
+-- ─── warmers ─────────────────────────────────────────────────
 CREATE TABLE warmers (
   "id" SERIAL PRIMARY KEY,
   "uid" VARCHAR(999),
@@ -284,7 +320,7 @@ CREATE TABLE warmers (
   "createdAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
--- web_private
+-- ─── web_private ─────────────────────────────────────────────
 CREATE TABLE web_private (
   "id" SERIAL PRIMARY KEY,
   "pay_offline_id" VARCHAR(999),
@@ -304,7 +340,7 @@ CREATE TABLE web_private (
   "createdAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
--- web_public
+-- ─── web_public ──────────────────────────────────────────────
 CREATE TABLE web_public (
   "id" SERIAL PRIMARY KEY,
   "logo" TEXT,
@@ -313,5 +349,75 @@ CREATE TABLE web_public (
   "is_custom_home" INTEGER DEFAULT 0,
   "meta_description" TEXT,
   "currency_code" VARCHAR(999) DEFAULT 'USD',
+  "currency_symbol" VARCHAR(999) DEFAULT NULL,
+  "home_page_tutorial" TEXT DEFAULT NULL,
+  "chatbot_screen_tutorial" TEXT DEFAULT NULL,
+  "broadcast_screen_tutorial" TEXT DEFAULT NULL,
+  "login_header_footer" TEXT DEFAULT NULL,
+  "welcome_email_html" TEXT DEFAULT NULL,
+  "auto_trial_active" INTEGER DEFAULT 0,
+  "exchange_rate" VARCHAR(999) DEFAULT NULL,
   "createdAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+-- ─── templet ─────────────────────────────────────────────────
+CREATE TABLE templet (
+  "id" SERIAL PRIMARY KEY,
+  "uid" VARCHAR(999) DEFAULT NULL,
+  "title" VARCHAR(999) DEFAULT NULL,
+  "type" VARCHAR(999) DEFAULT NULL,
+  "content" TEXT DEFAULT NULL,
+  "createdAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- ─── poll_votes ──────────────────────────────────────────────
+CREATE TABLE poll_votes (
+  "id" SERIAL PRIMARY KEY,
+  "uid" VARCHAR(999) DEFAULT NULL,
+  "msg_id" VARCHAR(999) DEFAULT NULL,
+  "vote_option" VARCHAR(999) DEFAULT NULL,
+  "voter" VARCHAR(999) DEFAULT NULL,
+  "createdAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- ─── chat_tag ────────────────────────────────────────────────
+CREATE TABLE chat_tag (
+  "id" SERIAL PRIMARY KEY,
+  "uid" VARCHAR(999) DEFAULT NULL,
+  "chat_id" TEXT DEFAULT NULL,
+  "tag" VARCHAR(999) DEFAULT NULL,
+  "createdAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- ─── chat_note ───────────────────────────────────────────────
+CREATE TABLE chat_note (
+  "id" SERIAL PRIMARY KEY,
+  "uid" VARCHAR(999) DEFAULT NULL,
+  "chat_id" TEXT DEFAULT NULL,
+  "note" TEXT DEFAULT NULL,
+  "createdAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- ─── chat_pinned ─────────────────────────────────────────────
+CREATE TABLE chat_pinned (
+  "id" SERIAL PRIMARY KEY,
+  "uid" VARCHAR(999),
+  "instance_id" TEXT,
+  "chat_id" TEXT,
+  "sender_jid" TEXT,
+  "display_name" TEXT,
+  "position" INTEGER DEFAULT 0,
+  "created_at" TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_chat_pinned_lookup ON chat_pinned (uid, instance_id);
+
+-- ─── baileys_auth ────────────────────────────────────────────
+CREATE TABLE baileys_auth (
+  "session_id" TEXT NOT NULL,
+  "key_type" TEXT NOT NULL,
+  "key_id" TEXT NOT NULL,
+  "value" JSONB,
+  "updated_at" TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (session_id, key_type, key_id)
+);
+CREATE INDEX IF NOT EXISTS idx_baileys_auth_session ON baileys_auth (session_id);

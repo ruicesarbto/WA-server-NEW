@@ -43,6 +43,7 @@ async function safeFetch(url, bodyObj) {
 function downloadMediaPromise(m, mimetype) {
   return new Promise(async (resolve) => {
     try {
+      await loadBaileys();
       const bufferMsg = await downloadMediaMessage(m, "buffer", {}, {});
       console.log({ m: JSON.stringify(m) });
       const randomSt = randomstring.generate(6);

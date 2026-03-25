@@ -61,17 +61,28 @@ export const getMediaUrl = (url: string | null | undefined): string | null => {
 };
 
 export const getAvatarProxyUrl = (chat: any, type: 'instance' | 'contact' = 'contact'): string | null => {
+    // Pegamos a URL base do backend (em produção deve ser injetada via env)
+    const backendUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8001';
+
     if (type === 'instance') {
-        // Use stored avatar/profilePictureUrl directly — no proxy endpoint available
         const direct = chat.avatar || chat.profilePictureUrl || null;
-        return direct || null;
+        if (!direct) return null;
+        // Se for caminho local do nosso cache
+        if (direct.startsWith('avatars/')) {
+            return `${backendUrl}/media/${direct}`;
+        }
+        return direct;
     }
 
-    // For contact — use stored avatar_url (WhatsApp CDN URL) directly
     const direct = chat.avatar_url || null;
-    if (direct) return direct;
+    if (!direct) return null;
 
-    return null;
+    // Se for caminho local do nosso cache
+    if (direct.startsWith('avatars/')) {
+        return `${backendUrl}/media/${direct}`;
+    }
+
+    return direct;
 };
 
 export const isGenericGroupSubject = (subject: string, phone: string, remoteJid: string) => {

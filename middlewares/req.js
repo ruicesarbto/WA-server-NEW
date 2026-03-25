@@ -2,12 +2,18 @@ const { existsSync, unlinkSync, readdir } = require("fs");
 const { join } = require("path");
 const pino = require("pino");
 
+// Auth state: PostgreSQL (producao)
+// O metodo file (useMultiFileAuthState) foi desativado - gerava dezenas de .json no servidor
+// Agora todo o estado de autenticacao Baileys fica no PostgreSQL (tabela baileys_auth)
+const { usePostgresAuthState, removeSession: removeSessionFromDB } = require("../database/usePostgresAuthState");
+console.log("[Auth] Using PostgreSQL-based auth state (production mode)");
+
 // Baileys variables - will be initialized dynamically
 let makeWASocket;
 let Browsers,
   DisconnectReason,
   delay,
-  useMultiFileAuthState,
+  // useMultiFileAuthState, // DESATIVADO - substituido por usePostgresAuthState
   getAggregateVotesInPollMessage,
   downloadMediaMessage,
   getUrlInfo,
@@ -23,12 +29,13 @@ const initBaileys = async () => {
       Browsers,
       DisconnectReason,
       delay,
-      useMultiFileAuthState,
+      // useMultiFileAuthState, // DESATIVADO - substituido por usePostgresAuthState
       getAggregateVotesInPollMessage,
       downloadMediaMessage,
       getUrlInfo,
       makeCacheableSignalKeyStore,
       fetchLatestBaileysVersion,
+      jidNormalizedUser,
     } = baileys);
     console.log("Baileys initialized successfully");
   } catch (error) {
@@ -43,6 +50,8 @@ const response = require("../response.js");
 const fs = require("fs");
 const path = require("path");
 const { query } = require("../database/dbpromise.js");
+const { dispatchColdStart, dispatchHotPath } = require("../queues/producers.js");
+const { getCacheClient, K } = require("../queues/cache.js");
 
 const sessions = new Map();
 const retries = new Map();
@@ -115,9 +124,9 @@ exports.createSession = async (
     console.log(`Session: ${sessionId} | No connection, check your internet.`);
   }
 
-  const { state, saveCreds } = await useMultiFileAuthState(
-    sessionsDir(sessionFile)
-  );
+  // Auth state via PostgreSQL (tabela baileys_auth)
+  // DESATIVADO: const { state, saveCreds } = await useMultiFileAuthState(sessionsDir(sessionFile));
+  const { state, saveCreds } = await usePostgresAuthState(sessionId);
 
   /**
    * @type {import('@whiskeysockets/baileys').CommonSocketConfig}
@@ -208,6 +217,67 @@ exports.createSession = async (
     saveDataToFile(chats, `${datNow}-chats.json`);
   });
 
+  // ── Handler: Atualização de Status de Mensagem (Ticks) ──
+  async function handleMessageStatusUpdate(message, instanceId) {
+    const { cacheUpdateMessageStatus } = require('../queues/cache.js');
+    const { getIOInstance } = require('../socket.js');
+
+    const msgId    = message?.key?.id;
+    const chatId   = message?.key?.remoteJid;
+    const rawStatus = message?.update?.status;
+
+    // Mapeamento: número Baileys → enum do sistema
+    const STATUS_MAP = {
+      0: 'error',
+      1: 'sent',
+      2: 'server_ack',
+      3: 'delivered',
+      4: 'read',
+      5: 'played',
+    };
+    const statusStr = STATUS_MAP[rawStatus] ?? 'sent';
+
+    console.log(`[StatusUpdate] msg=${msgId} chat=${chatId} status=${rawStatus}→${statusStr}`);
+
+    // 1. Atualiza no PostgreSQL
+    try {
+      await query(
+        `UPDATE messages SET status = $1 WHERE instance_id = $2 AND msg_id = $3`,
+        [statusStr, instanceId, msgId]
+      );
+    } catch (err) {
+      console.error('[StatusUpdate:PG] Error updating status:', err.message);
+    }
+
+    // 2. Atualiza no Redis Hot Cache (fire-and-forget)
+    cacheUpdateMessageStatus(instanceId, chatId, msgId, statusStr).catch(() => {});
+
+    // 3. Emite Socket.IO para o frontend
+    try {
+      const io = getIOInstance();
+      if (io) {
+        const usersWatching = await query(
+          `SELECT uid FROM user WHERE opened_chat_instance = $1`,
+          [instanceId]
+        );
+        for (const u of (usersWatching || [])) {
+          const rows = await query(`SELECT socket_id FROM rooms WHERE uid = $1`, [u.uid]);
+          const socketId = rows?.[0]?.socket_id;
+          if (socketId) {
+            io.to(socketId).emit('message:status_update', {
+              instanceId,
+              chatId,
+              msgId,
+              status: statusStr,
+            });
+          }
+        }
+      }
+    } catch (err) {
+      console.error('[StatusUpdate:Socket] Error emitting event:', err.message);
+    }
+  }
+
   function saveContacts(contacts) {
     const savedContacts = [];
 
@@ -256,49 +326,61 @@ exports.createSession = async (
     });
   }
 
-  // Helper: try to fetch and save own avatar to DB
+  // Helper: try to fetch and save own avatar to DB (with retry and local cache)
   async function trySaveOwnAvatar() {
     try {
       const rawJid = wa.user?.id;
       if (!rawJid) return;
       const myJid = rawJid.split(':')[0] + '@s.whatsapp.net';
       const { fetchProfileUrl } = require("../functions/control.js");
-      const imgUrl = await fetchProfileUrl(wa, myJid);
+      const { downloadAndSaveAvatar } = require("../functions/avatar.js");
+      
+      let imgUrl = await fetchProfileUrl(wa, myJid);
+      // Retry once after 5s if first attempt failed (WhatsApp rate limiting)
+      if (!imgUrl) {
+        await new Promise(r => setTimeout(r, 5000));
+        imgUrl = await fetchProfileUrl(wa, myJid);
+      }
+      
       if (!imgUrl) return;
+
+      // [FIX] Salva localmente para evitar expiração da URL do CDN
+      const localPath = await downloadAndSaveAvatar(imgUrl, myJid);
+      const savedPath = localPath || imgUrl; // Fallback para URL se download falhar
+
       const creds = wa?.authState?.creds;
       const name = creds?.me?.name || null;
-      const userData = JSON.stringify({ id: rawJid, name, imgUrl });
+      const userData = JSON.stringify({ id: rawJid, name, imgUrl: savedPath });
+      
       await query(
         `UPDATE instance SET userData = ? WHERE instance_id = ?`,
         [userData, sessionId]
       );
-      console.log(`Own avatar saved for session ${sessionId}: ${imgUrl.substring(0, 60)}...`);
+      console.log(`Own avatar saved locally for session ${sessionId}: ${savedPath}`);
     } catch (_) { /* non-fatal */ }
   }
 
   wa.ev.on("messaging-history.set", async (data) => {
-    const contactData = data.contacts;
-    const chats = data.chats;
-
-    const filterdGroupChats = chats.filter((item) => {
-      return item?.id?.endsWith("@g.us");
-    });
-
-    const filterdChats = chats.filter((item) => {
-      return item?.id?.endsWith("@s.whatsapp.net");
-    });
-
-    const filteredContacts = contactData.filter((item) =>
-      item.id.endsWith("@s.whatsapp.net")
-    );
-
     const { uid } = decodeObject(sessionId);
+
+    // ── 1. Despacha para fila BullMQ (zero I/O de banco nesta thread) ──
+    // O payload é fatiado em chunks e enviado para Redis.
+    // O ColdStartWorker consome e persiste no PostgreSQL com concurrency controlada.
+    dispatchColdStart(data, sessionId, uid).catch((err) => {
+      console.error(`[ColdStartProducer] FATAL instance=${sessionId}:`, err.message);
+    });
+
+    // ── 2. Contatos (preserva lógica legada de arquivo JSON) ──
+    const contactData = data.contacts;
+    const filteredContacts = (contactData || []).filter((item) =>
+      item.id?.endsWith("@s.whatsapp.net")
+    );
 
     if (filteredContacts.length > 0) {
       createJsonFile(`${sessionId}__two`, saveContacts(filteredContacts), uid);
     }
 
-    // Try to grab own avatar from history sync contacts or direct fetch
+    // ── 3. Avatar próprio ──
     const myRawJid = wa.user?.id;
     if (myRawJid) {
       const myJid = myRawJid.split(':')[0] + '@s.whatsapp.net';
@@ -311,7 +393,6 @@ exports.createSession = async (
           console.log(`Own avatar from history sync for ${sessionId}`);
         } catch (_) {}
       } else {
-        // Not in contacts list, try direct fetch
         await trySaveOwnAvatar();
       }
     }
@@ -334,32 +415,60 @@ exports.createSession = async (
         await trySaveOwnAvatar();
       }
     }
+
+    // ── Bug 3 Fix: Batch avatar fetch for contacts (throttled, cached locally) ──
+    (async () => {
+      try {
+        const { fetchProfileUrl } = require("../functions/control.js");
+        const { downloadAndSaveAvatar } = require("../functions/avatar.js");
+        const contacts = data.filter(c => c.id?.endsWith('@s.whatsapp.net') || c.id?.endsWith('@g.us'));
+        
+        for (const contact of contacts.slice(0, 30)) { // Reduzi para 30 para ser mais conservador com rate limit
+          try {
+            const imgUrl = await fetchProfileUrl(wa, contact.id);
+            if (imgUrl) {
+              // [FIX] Salva localmente para persistência
+              const localPath = await downloadAndSaveAvatar(imgUrl, contact.id);
+              const savedPath = localPath || imgUrl;
+
+              await query(
+                `UPDATE chats SET profile_image = $1 WHERE instance_id = $2 AND sender_jid = $3`,
+                [savedPath, sessionId, contact.id]
+              );
+            }
+          } catch {}
+          await new Promise(r => setTimeout(r, 1000)); // throttle aumentado para 1s
+        }
+        console.log(`[Contacts:Avatar] Batch fetch & cache completed for ${contacts.slice(0, 30).length} contacts (instance=${sessionId})`);
+      } catch (batchErr) {
+        console.error('[Contacts:Avatar] Batch fetch failed:', batchErr.message);
+      }
+    })();
   });
 
   wa.ev.on("messages.update", async (m) => {
-    const message = m[0];
+    for (const message of m) {
+      if (message?.update?.pollUpdates?.length > 0) {
+        const pollMessage = getAggregateVotesInPollMessage({
+          message: message,
+          pollUpdates: message?.update?.pollUpdates,
+        });
+        updateDelivery(message, sessionId, pollMessage);
+        const session = await exports.getSession(sessionId);
+        chatbotInit({ messages: m }, wa, sessionId, session, pollMessage);
+        continue;
+      }
 
-    if (message?.update?.pollUpdates?.length > 0) {
-      // For poll updates, we need to get the original message from the chat
-      // Since we don't have store, we'll pass the update directly
-      const pollMessage = getAggregateVotesInPollMessage({
-        message: message,
-        pollUpdates: message?.update?.pollUpdates,
-      });
-
-      updateDelivery(message, sessionId, pollMessage);
-      const session = await exports.getSession(sessionId);
-
-      const a = { messages: m };
-      chatbotInit(a, wa, sessionId, session, pollMessage);
-    } else {
+      // ── Atualização de status (ticks) ──
       if (
-        message?.update &&
-        message?.key?.remoteJid !== "status@broadcast" &&
+        message?.update?.status !== undefined &&
         message?.key?.remoteJid &&
-        message?.update?.status
+        message?.key?.remoteJid !== "status@broadcast" &&
+        message?.key?.id
       ) {
-        updateDelivery(message, sessionId);
+        handleMessageStatusUpdate(message, sessionId).catch((err) => {
+          console.error('[StatusUpdate] Error:', err.message);
+        });
       }
     }
   });
@@ -368,18 +477,151 @@ exports.createSession = async (
     fs.writeFileSync(filename, JSON.stringify(data, null, 2));
   }
 
-  // Automatically read incoming messages
+  // Automatically read incoming messages — DUAL PATH (Fast + Safe)
   wa.ev.on("messages.upsert", async (m) => {
     const message = m.messages[0];
-    const session = await exports.getSession(sessionId);
+    if (!message?.key?.remoteJid || message.key.remoteJid === "status@broadcast") return;
+    if (m.type !== "notify") return;
 
-    if (message?.key?.remoteJid !== "status@broadcast" && m.type === "notify") {
-      if (!message.key.fromMe) {
-        chatbotInit(m, wa, sessionId, session);
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // PASSO 1: NORMALIZAÇÃO (obrigatória, sempre primeiro)
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    message.key.remoteJid = jidNormalizedUser(message.key.remoteJid);
+    if (message.key.participant) {
+      message.key.participant = jidNormalizedUser(message.key.participant);
+    }
+
+    const { uid } = decodeObject(sessionId);
+    const chatId = message.key.remoteJid;
+    const isGroup = chatId.endsWith("@g.us");
+    const fromMe = message.key.fromMe || false;
+
+    // Extrair corpo da mensagem
+    const msgContent = message.message || {};
+    const msgBody =
+      msgContent.conversation ||
+      msgContent.extendedTextMessage?.text ||
+      msgContent.imageMessage?.caption ||
+      msgContent.videoMessage?.caption ||
+      msgContent.documentMessage?.caption ||
+      "";
+
+    // Tipo de mensagem
+    let msgType = "text";
+    if (msgContent.imageMessage) msgType = "image";
+    else if (msgContent.videoMessage) msgType = "video";
+    else if (msgContent.audioMessage) msgType = "audio";
+    else if (msgContent.documentMessage) msgType = "document";
+    else if (msgContent.stickerMessage) msgType = "sticker";
+    else if (msgContent.contactMessage || msgContent.contactsArrayMessage) msgType = "contact";
+    else if (msgContent.locationMessage || msgContent.liveLocationMessage) msgType = "location";
+    else if (msgContent.reactionMessage) msgType = "reaction";
+
+    // Timestamp
+    const rawTs = message.messageTimestamp;
+    const epochSec = rawTs
+      ? (typeof rawTs === "object" ? rawTs.low : Number(rawTs))
+      : Math.floor(Date.now() / 1000);
+
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // PASSO 2: ENRIQUECIMENTO (nome grupo + avatar — antes do emit)
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    let senderName = message.pushName || "Sem nome";
+    let chatName = senderName;
+    let profileImage = null;
+
+    try {
+      if (isGroup) {
+        // Buscar nome real do grupo (NUNCA o pushName do remetente)
+        try {
+          const meta = await wa.groupMetadata(chatId);
+          chatName = meta?.subject || chatId;
+        } catch { chatName = chatId; }
       }
 
-      webhookIncoming(message, sessionId, session);
+      // Buscar avatar (non-blocking, fallback = null)
+      try {
+        profileImage = await wa.profilePictureUrl(chatId, "image");
+      } catch { profileImage = null; }
+    } catch (enrichErr) {
+      console.error("[FastPath:Enrich] Error:", enrichErr.message);
     }
+
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // PASSO 3: 🔥 FAST PATH — EMIT IMEDIATO (UI recebe instantâneo)
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    try {
+      const { getIOInstance } = require("../socket.js");
+      const io = getIOInstance();
+      if (io) {
+        const rows = await query(`SELECT socket_id FROM rooms WHERE uid = ?`, [uid]);
+        const socketId = rows?.[0]?.socket_id;
+        if (socketId) {
+          // Formato compatível com o que o frontend page.tsx e chatEngine.ts esperam
+          io.to(socketId).emit("push_new_msg", {
+            msg: {
+              msgId: message.key.id,
+              remoteJid: chatId,
+              chatId: chatId,
+              type: msgType,
+              msgContext: { text: msgBody },
+              text: msgBody,
+              senderName: senderName,
+              senderJid: fromMe ? null : (message.key.participant || chatId),
+              fromMe: fromMe,
+              route: fromMe ? "outgoing" : "incoming",
+              status: "sent",
+              timestamp: epochSec,
+              pushName: senderName,
+              instanceName: sessionId,
+              profileImage: profileImage,
+            },
+            chatId: chatId,
+            sessionId: sessionId,
+          });
+
+          // Também emite update_conversations para a Inbox atualizar a lista
+          io.to(socketId).emit("update_conversations", {
+            chat: {
+              chat_id: chatId,
+              instance_id: sessionId,
+              sender_name: chatName,
+              sender_jid: chatId,
+              profile_image: profileImage,
+              last_message: isGroup ? `${senderName}: ${msgBody}` : msgBody,
+              last_message_at: new Date(epochSec * 1000).toISOString(),
+              last_message_type: msgType,
+              unread_count: fromMe ? 0 : 1,
+              is_read: fromMe,
+              chat_status: "open",
+            },
+            instanceId: sessionId,
+          });
+
+          console.log(`[FastPath] Emitted push_new_msg + update_conversations for ${chatId} (${isGroup ? "group" : "private"})`);
+        }
+      }
+    } catch (emitErr) {
+      console.error("[FastPath] Emit error:", emitErr.message);
+    }
+
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // PASSO 4: 🧠 SAFE PATH — BullMQ (persistência assíncrona)
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    dispatchHotPath(m.messages, sessionId, uid).catch((err) => {
+      console.error(`[SafePath] Dispatch failed instance=${sessionId}:`, err.message);
+    });
+
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // PASSO 5: Chatbot + Webhook (inalterados)
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    if (!fromMe) {
+      const session = await exports.getSession(sessionId);
+      chatbotInit(m, wa, sessionId, session);
+    }
+
+    const session = await exports.getSession(sessionId);
+    webhookIncoming(message, sessionId, session);
   });
 
   wa.ev.on("connection.update", async (update) => {
@@ -396,33 +638,64 @@ exports.createSession = async (
     // Handle successful connection
     if (connection === "open") {
       retries.delete(sessionId);
-      qrGeneratedSessions.delete(sessionId); // Clear QR flag on successful connection
+      qrGeneratedSessions.delete(sessionId);
       console.log(`Session ${sessionId} connected successfully!`);
 
-      // Update DB: mark instance as CONNECTED and store JID + pushname + avatar
-      try {
-        const creds = wa?.authState?.creds;
-        const rawJid = creds?.me?.id || null;
-        const name   = creds?.me?.name || null;
-        // Strip device suffix: "67999222377:6@s.whatsapp.net" → "67999222377@s.whatsapp.net"
-        const jid = rawJid && rawJid.includes(':')
-          ? rawJid.replace(/:.*@/, '@')
-          : rawJid;
+      const creds = wa?.authState?.creds;
+      const rawJid = creds?.me?.id || null;
+      const name   = creds?.me?.name || null;
+      const jid = rawJid ? jidNormalizedUser(rawJid) : null;
 
-        // Fetch profile picture once on connect (lazy require to avoid circular dep)
+      // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+      // 🔥 FAST PATH: Emit session:connected IMEDIATAMENTE
+      //    (Fecha o modal QR no frontend instantaneamente)
+      // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+      try {
+        const { getIOInstance } = require("../socket.js");
+        const io = getIOInstance();
+        if (io) {
+          const { uid } = decodeObject(sessionId);
+          const rows = await query(`SELECT socket_id FROM rooms WHERE uid = ?`, [uid]);
+          const socketId = rows?.[0]?.socket_id;
+          if (socketId) {
+            io.to(socketId).emit('session:connected', {
+              sessionId,
+              userData: { id: rawJid, name, imgUrl: null }, // avatar vem depois
+            });
+            console.log(`[FastPath:Session] Emitted session:connected for ${sessionId}`);
+          }
+        }
+      } catch (emitErr) {
+        console.error('[FastPath:Session] Emit failed:', emitErr.message);
+      }
+
+      // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+      // 🧠 SAFE PATH: Buscar avatar + persistir no DB (assíncrono)
+      // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+      try {
         let imgUrl = null;
+        let savedPath = null;
         try {
           const { fetchProfileUrl } = require("../functions/control.js");
+          const { downloadAndSaveAvatar } = require("../functions/avatar.js");
           imgUrl = jid ? await fetchProfileUrl(wa, jid) : null;
+          if (!imgUrl && jid) {
+            await new Promise(r => setTimeout(r, 3000));
+            imgUrl = await fetchProfileUrl(wa, jid);
+          }
+          if (imgUrl && jid) {
+            const localPath = await downloadAndSaveAvatar(imgUrl, jid);
+            savedPath = localPath || imgUrl;
+          }
         } catch (_) { /* non-fatal */ }
 
-        const userData = rawJid ? JSON.stringify({ id: rawJid, name, imgUrl }) : null;
+        const userData = rawJid ? JSON.stringify({ id: rawJid, name, imgUrl: savedPath }) : null;
 
         await query(
           `UPDATE instance SET status = 'CONNECTED', jid = ?, userData = ? WHERE instance_id = ?`,
           [rawJid, userData, sessionId]
         );
-        console.log(`DB updated: ${sessionId} → CONNECTED (jid=${rawJid}, name=${name}, hasAvatar=${!!imgUrl})`);
+        console.log(`[SafePath:Session] DB updated: ${sessionId} → CONNECTED (jid=${rawJid}, hasAvatar=${!!savedPath})`);
       } catch (dbErr) {
         console.error("Failed to update instance status in DB:", dbErr);
       }
@@ -556,19 +829,73 @@ exports.deleteDirectory = (directoryPath) => {
   }
 };
 
+/**
+ * Auxiliar para deletar chaves do Redis usando SCAN (seguro para produção)
+ */
+async function deleteKeysByPattern(pattern) {
+  const redis = getCacheClient();
+  let cursor = '0';
+  do {
+    const [nextCursor, keys] = await redis.scan(cursor, 'MATCH', pattern, 'COUNT', 100);
+    cursor = nextCursor;
+    if (keys.length > 0) {
+      await redis.del(...keys);
+    }
+  } while (cursor !== '0');
+}
+
 exports.deleteSession = async (sessionId, isLegacy = false) => {
-  const sessionFile = "md_" + sessionId;
-
-  const dirName = process.cwd();
-  deleteFileIfExists(`${dirName}/contacts/${sessionId}.json`);
-
-  if (isSessionFileExists(sessionFile)) {
-    exports.deleteDirectory(sessionsDir(sessionFile));
+  console.log(`[DeepCleanup] Starting cleanup for session: ${sessionId}`);
+  
+  // ── 1. Limpeza de Mídias (Disco) ──
+  try {
+    const mediaDir = path.join(process.cwd(), 'public', 'media', sessionId);
+    if (fs.existsSync(mediaDir)) {
+      fs.rmSync(mediaDir, { recursive: true, force: true });
+      console.log(`[DeepCleanup:Disco] Media folder removed: ${mediaDir}`);
+    }
+  } catch (err) {
+    console.error(`[DeepCleanup:Disco] Error removing media folder:`, err.message);
   }
 
+  // ── 2. Limpeza de Histórico (PostgreSQL) ──
+  try {
+    // Apagar mensagens e chats vinculados à instância
+    const qMsgs = await query(`DELETE FROM messages WHERE instance_id = ?`, [sessionId]);
+    const qChats = await query(`DELETE FROM chats WHERE instance_id = ?`, [sessionId]);
+    console.log(`[DeepCleanup:PG] History cleared: ${qMsgs.affectedRows || '?'} msgs, ${qChats.affectedRows || '?'} chats`);
+    
+    // Apagar credenciais de autenticação
+    await removeSessionFromDB(sessionId);
+    console.log(`[DeepCleanup:PG] Auth state removed`);
+  } catch (err) {
+    console.error(`[DeepCleanup:PG] Error clearing database:`, err.message);
+  }
+
+  // ── 3. Limpeza de Hot Cache (Redis) ──
+  try {
+    const redis = getCacheClient();
+    
+    // Deleta o Inbox ZSET
+    await redis.del(K.inbox(sessionId));
+    
+    // Escaneia e deleta todas as listas de mensagens msgs:instanceId:*
+    await deleteKeysByPattern(`msgs:${sessionId}:*`);
+    
+    console.log(`[DeepCleanup:Redis] Hot cache purged for ${sessionId}`);
+  } catch (err) {
+    console.error(`[DeepCleanup:Redis] Error purging cache:`, err.message);
+  }
+
+  // ── 4. Limpeza de Metadados e Memória ──
   sessions.delete(sessionId);
   retries.delete(sessionId);
   qrGeneratedSessions.delete(sessionId);
+
+  const dirName = process.cwd();
+  deleteFileIfExists(`${dirName}/contacts/${sessionId}.json`);
+  
+  console.log(`[DeepCleanup] Finished for session: ${sessionId}`);
 };
 
 exports.getChatList = (sessionId, isGroup = false) => {
@@ -776,29 +1103,33 @@ const init = async () => {
     await initBaileys();
   }
 
-  const sessionsPath = path.join(dirName, "sessions");
-
-  fs.readdir(sessionsPath, (err, files) => {
-    if (err) {
-      throw err;
+  // Restaurar sessoes a partir do PostgreSQL (tabela instance)
+  // Busca todas as instancias que estavam conectadas e recria as sessoes
+  try {
+    const instances = await query('SELECT instance_id FROM instance WHERE status IS NOT NULL');
+    console.log(`[Auth] Found ${instances.length} instance(s) to restore from DB`);
+    for (const inst of instances) {
+      const sessionId = inst.instance_id;
+      exports.createSession(sessionId, false);
     }
+  } catch (err) {
+    console.error('[Auth] Error restoring sessions from DB:', err.message);
+  }
 
-    for (const file of files) {
-      if (
-        !file.endsWith(".json") ||
-        !file.startsWith("md_") ||
-        file.includes("_store")
-      ) {
-        continue;
-      }
-
-      const filename = file.replace(".json", "");
-      const isLegacy = filename.split("_", 1)[0] !== "md";
-      const sessionId = filename.substring(isLegacy ? 7 : 3);
-
-      exports.createSession(sessionId, isLegacy);
-    }
-  });
+  // DESATIVADO: restaurar sessoes a partir de arquivos .json no filesystem
+  // const sessionsPath = path.join(dirName, "sessions");
+  // fs.readdir(sessionsPath, (err, files) => {
+  //   if (err) { throw err; }
+  //   for (const file of files) {
+  //     if (!file.endsWith(".json") || !file.startsWith("md_") || file.includes("_store")) {
+  //       continue;
+  //     }
+  //     const filename = file.replace(".json", "");
+  //     const isLegacy = filename.split("_", 1)[0] !== "md";
+  //     const sessionId = filename.substring(isLegacy ? 7 : 3);
+  //     exports.createSession(sessionId, isLegacy);
+  //   }
+  // });
 };
 exports.init = init;
 exports.cleanup = () => {

@@ -69,11 +69,14 @@ const MessageBubble: React.FC<MessageBubbleProps> = React.memo(({
                 return <Check className="w-3.5 h-3.5 text-[#8696a0]" />;
             case 'sent':
                 return <Check className="w-3.5 h-3.5 text-[#8696a0]" />;
+            case 'server_ack':
             case 'delivered':
                 return <CheckCheck className="w-3.5 h-3.5 text-[#8696a0]" />;
             case 'read':
+            case 'played':
                 return <CheckCheck className="w-3.5 h-3.5 text-[#53bdeb]" />;
             case 'failed':
+            case 'error':
                 return <span title="Falha no envio"><AlertCircle className="w-3.5 h-3.5 text-[#ef4444]" /></span>;
             default:
                 return null;
@@ -295,19 +298,24 @@ const MessageBubble: React.FC<MessageBubbleProps> = React.memo(({
                     </AnimatePresence>
                 </div>
 
-                {/* Visible Reactions Badge */}
-                {msg.reactions && Object.keys(msg.reactions).length > 0 && (
+                {/* Visible Reactions Badge — suporta novo campo `reaction` (string) e legado `reactions` (objeto) */}
+                {(msg.reaction || (msg.reactions && Object.keys(msg.reactions).length > 0)) && (
                     <motion.div
                         initial={{ scale: 0.5, opacity: 0 }}
                         animate={{ scale: 1, opacity: 1 }}
                         className={`mt-1 flex ${isOut ? 'justify-end mr-2' : 'justify-start ml-2'}`}
                     >
-                        <div className="flex items-center bg-[#111b21] rounded-full px-2.5 py-1 shadow-2xl border border-white/5 gap-1.5 z-10 hover:scale-105 transition-transform cursor-pointer ring-1 ring-white/10 backdrop-blur-xl">
-                            {Object.entries(msg.reactions).slice(0, 3).map(([sender, emoji], idx) => (
-                                <span key={idx} title={sender} className="text-[13px]">{emoji}</span>
+                        <div className="flex items-center bg-white rounded-full px-2.5 py-1 shadow-sm border border-[#d1d7db] gap-1 z-10 hover:scale-105 transition-transform cursor-pointer">
+                            {/* Novo: reaction como string (emoji único) */}
+                            {msg.reaction && (
+                                <span className="text-[14px]">{msg.reaction}</span>
+                            )}
+                            {/* Legado: reactions como objeto {sender: emoji} */}
+                            {!msg.reaction && msg.reactions && Object.entries(msg.reactions).slice(0, 3).map(([sender, emoji], idx) => (
+                                <span key={idx} title={sender} className="text-[13px]">{emoji as string}</span>
                             ))}
-                            {Object.keys(msg.reactions).length > 3 && (
-                                <span className="text-[10px] text-slate-500 font-black">+{Object.keys(msg.reactions).length - 3}</span>
+                            {!msg.reaction && msg.reactions && Object.keys(msg.reactions).length > 3 && (
+                                <span className="text-[10px] text-[#667781] font-bold">+{Object.keys(msg.reactions).length - 3}</span>
                             )}
                         </div>
                     </motion.div>

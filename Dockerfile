@@ -21,16 +21,18 @@ COPY package.json ./
 COPY routes/ ./routes/
 COPY middlewares/ ./middlewares/
 COPY database/ ./database/
+COPY queues/ ./queues/
 COPY loops/ ./loops/
 COPY functions/ ./functions/
 COPY emails/ ./emails/
+COPY sql/ ./sql/
 
 # Criar diretórios para runtime
 RUN mkdir -p public/media sessions contacts conversations flow-json
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-  CMD node -e "require('http').get('http://localhost:8001/api/health', (r) => {if (r.statusCode !== 200) throw new Error(r.statusCode)})"
+  CMD node -e "require('http').get('http://localhost:8001/health', (r) => {if (r.statusCode !== 200) throw new Error(r.statusCode)})"
 
 EXPOSE 8001
 ENTRYPOINT ["/sbin/tini", "--"]

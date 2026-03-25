@@ -105,7 +105,7 @@ export default function WhatsAppInboxPage() {
     const [loading, setLoading] = useState(true);
     const [activeTab, setActiveTab] = useState<TabType>('chats');
     const [msgLoading, setMsgLoading] = useState(false);
-    const [historyOffset, setHistoryOffset] = useState(0);
+    const [historyCursor, setHistoryCursor] = useState<string | null>(null);
     const [hasMoreHistory, setHasMoreHistory] = useState(false);
     const [historyLoadingMore, setHistoryLoadingMore] = useState(false);
     const [historyFilters, setHistoryFilters] = useState<HistoryFilters>({});
@@ -267,7 +267,7 @@ export default function WhatsAppInboxPage() {
     const favoriteSet = useMemo(() => new Set(favoriteJids), [favoriteJids]);
 
     const connectedInstances = useMemo(() =>
-        instances.filter(i => i.status === 'connected' || i.status === 'open')
+        instances.filter(i => ['connected', 'open', 'authenticated'].includes(i.status || ''))
             .map(i => ({
                 id: i.instance,
                 nome: i.nome || i.instance,
@@ -388,12 +388,11 @@ export default function WhatsAppInboxPage() {
         chatId?: string,
     ) => {
         const reset = options?.reset !== false;
-        const activeFilters = options?.filters || historyFilters;
         if (reset) setMsgLoading(true);
         else setHistoryLoadingMore(true);
 
         try {
-            const offset = reset ? 0 : historyOffset;
+            const cursorToUse = reset ? null : historyCursor;
             const beforeHeight = scrollRef.current?.scrollHeight || 0;
             const beforeTop = scrollRef.current?.scrollTop || 0;
 
@@ -402,24 +401,25 @@ export default function WhatsAppInboxPage() {
                 instance,
                 remoteJid,
                 chatId,
+                cursorToUse,
             );
 
-            const batchDesc = data.messages || [];
-            const batchAsc = [...batchDesc].reverse().map(normalizeMessageRow);
+            // Backend now returns messages in chronological order (ASC)
+            const batch = (data.messages || []).map(normalizeMessageRow);
 
             if (reset) {
                 const map = new Map<string, Message>();
-                batchAsc.forEach(m => map.set(m.message_id, m));
-                setMessages(Array.from(map.values()).sort((a, b) => 
+                batch.forEach(m => map.set(m.message_id, m));
+                setMessages(Array.from(map.values()).sort((a, b) =>
                     new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
                 ));
-            } else if (batchAsc.length > 0) {
+            } else if (batch.length > 0) {
                 prependingHistoryRef.current = true;
                 setMessages((prev: Message[]) => {
-                    const combined = [...batchAsc, ...prev];
+                    const combined = [...batch, ...prev];
                     const map = new Map<string, Message>();
                     combined.forEach((m: Message) => map.set(m.message_id, m));
-                    return Array.from(map.values()).sort((a: Message, b: Message) => 
+                    return Array.from(map.values()).sort((a: Message, b: Message) =>
                         new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
                     );
                 });
@@ -432,8 +432,7 @@ export default function WhatsAppInboxPage() {
                 }, 0);
             }
 
-            const nextOffset = Number(data.nextOffset ?? (offset + batchDesc.length));
-            setHistoryOffset(nextOffset);
+            setHistoryCursor(data.nextCursor || null);
             setHasMoreHistory(Boolean(data.hasMore));
         } catch (error) {
             console.error('Erro ao carregar histórico:', error);
@@ -441,7 +440,7 @@ export default function WhatsAppInboxPage() {
             setMsgLoading(false);
             setHistoryLoadingMore(false);
         }
-    }, [historyOffset, historyFilters]);
+    }, [historyCursor, historyFilters]);
 
     const loadChats = useCallback(async () => {
         setLoading(true);
@@ -765,75 +764,9 @@ export default function WhatsAppInboxPage() {
 
         import("../../core/chatEngine").then(({ chatEngine }) => {
             chatEngine.connect(user?.uid);
-            
-            // Wire real-time events for this user
-            const offMsg = chatEngine.onEvent("push_new_msg", (data) => {
-                if (queueChatsRefreshRef.current) queueChatsRefreshRef.current(50);
-                // Also optionally format data and add to active chat
-                const r = data?.msg;
-                console.log('[Socket] push_new_msg received:', r);
-                if (!r) return;
-                const newMsg: Message = {
-                    id: Date.now(),
-                    chat_id: 0,
-                    message_id: r.msgId || `${r.timestamp}-${Date.now()}`,
-                    text: r.msgContext?.text || r.text || '',
-                    type: r.type || 'text',
-                    direction: r.route === 'outgoing' ? 'out' : 'in',
-                    status: r.status || (r.route === 'outgoing' ? 'sent' : 'pending'),
-                    timestamp: r.timestamp ? new Date(Number(r.timestamp) * 1000).toISOString() : new Date().toISOString(),
-                    media_url: r.msgContext?.url || r.msgContext?.mediaUrl || r.media_url || null,
-                    media_type: r.type !== 'text' ? r.type : undefined,
-                    reactions: r.reaction ? { [r.reaction]: r.reaction } : null,
-                    message_payload: r,
-                    participant: r.senderName || null,
-                    quoted_message_text: r.context?.id ? "Mensagem citada" : undefined,
-                };
-                
-                useChatStore.getState().receiveMessage({
-                    ...newMsg,
-                    chatId: r.remoteJid
-                });
-
-                useWhatsAppStore.getState().upsertMessageEvent({
-                    remoteJid: r.remoteJid,
-                    text: newMsg.text,
-                    timestampIso: newMsg.timestamp,
-                    fromMe: newMsg.direction === 'out',
-                    status: newMsg.status as any,
-                    messageId: newMsg.message_id,
-                    messagePayload: r,
-                    pushName: r.pushName || r.senderName,
-                    instanceName: r.instanceName,
-                    messageType: newMsg.type,
-                    participantName: r.senderName,
-                });
-            });
-
-            const offConv = chatEngine.onEvent("update_conversations", (data) => {
-                if (queueChatsRefreshRef.current) queueChatsRefreshRef.current(50);
-            });
-            
-            const offReact = chatEngine.onEvent("push_new_reaction", (data) => {
-               if (queueChatsRefreshRef.current) queueChatsRefreshRef.current(50);
-               const r = data?.reaction;
-               if (!r || !r.remoteJid) return;
-               useWhatsAppStore.getState().updateChatLastReaction(
-                   r.remoteJid,
-                   `Reação: ${r.text}`,
-                   new Date().toISOString(),
-                   r.fromMe
-               );
-            });
-
-            // Store cleanly
-            (window as any)._cleanupChatEngine = () => {
-                offMsg(); offConv(); offReact();
-            };
         });
 
         return () => {
-            if ((window as any)._cleanupChatEngine) (window as any)._cleanupChatEngine();
             window.removeEventListener('resize', handleResize);
             document.removeEventListener('mousedown', handleClickOutside);
             stopInstancePolling();
@@ -850,7 +783,7 @@ export default function WhatsAppInboxPage() {
     // Passo 1.5 - Auto-seleção de Instância Conectada
     useEffect(() => {
         if (!activeInstance && instances.length > 0) {
-            const connected = instances.find(i => i.status === 'connected');
+            const connected = instances.find(i => ['connected', 'open', 'authenticated'].includes(i.status || ''));
             if (connected) {
                 setActiveInstance(connected);
             }
@@ -1004,7 +937,7 @@ export default function WhatsAppInboxPage() {
 
     useEffect(() => {
         if (!selectedChat?.remote_jid) return;
-        setHistoryOffset(0);
+        setHistoryCursor(null);
         setHasMoreHistory(false);
         setHistoryFilters({});
         loadHistory(selectedChat.phone, selectedChat.instance_name, selectedChat.remote_jid, { reset: true, filters: {} }, selectedChat.chat_id);
@@ -1516,7 +1449,7 @@ export default function WhatsAppInboxPage() {
                                         onClick={() => setIsInstanceDropdownOpen(!isInstanceDropdownOpen)}
                                         className="profile-dropdown flex items-center gap-3 cursor-pointer group p-1 hover:bg-white rounded-lg transition-colors border border-transparent hover:border-gray-200"
                                     >
-                                        <div className={`w-10 h-10 rounded-full flex items-center justify-center overflow-hidden border-2 shadow-sm transition-transform active:scale-95 ${activeInstance?.status === 'connected' ? 'bg-emerald-500 border-emerald-600' : 'bg-gray-300 border-gray-400'}`}>
+                                        <div className={`w-10 h-10 rounded-full flex items-center justify-center overflow-hidden border-2 shadow-sm transition-transform active:scale-95 ${['connected', 'open', 'authenticated'].includes(activeInstance?.status || '') ? 'bg-emerald-500 border-emerald-600' : 'bg-gray-300 border-gray-400'}`}>
                                             {(activeInstance?.avatar || activeInstance?.profilePictureUrl) && !instanceAvatarErrors[activeInstance?.instance || ''] ? (
                                                 <img
                                                     src={activeInstance.avatar || activeInstance.profilePictureUrl || ''}
@@ -1534,8 +1467,8 @@ export default function WhatsAppInboxPage() {
                                             <span className="text-sm font-bold text-gray-900 truncate">
                                                 {activeInstance?.nome || 'Instância'}
                                             </span>
-                                            <span className={`text-[11px] truncate font-medium ${activeInstance?.status === 'connected' ? 'text-emerald-600' : 'text-gray-500'}`}>
-                                                {activeInstance?.status === 'connected' 
+                                            <span className={`text-[11px] truncate font-medium ${['connected', 'open', 'authenticated'].includes(activeInstance?.status || '') ? 'text-emerald-600' : 'text-gray-500'}`}>
+                                                {['connected', 'open', 'authenticated'].includes(activeInstance?.status || '') 
                                                     ? (activeInstance?.phone ? `+${activeInstance.phone}` : 'Conectado (Sem número)') 
                                                     : 'Não conectado'}
                                             </span>
@@ -1568,7 +1501,7 @@ export default function WhatsAppInboxPage() {
                                                             }}
                                                             className={`w-full flex items-center gap-4 px-3 py-3 rounded-lg hover:bg-gray-50 transition-colors group/item ${activeInstance?.instance === inst.instance ? 'bg-gray-50' : ''}`}
                                                         >
-                                                            <div className={`w-12 h-12 rounded-full flex items-center justify-center overflow-hidden border-2 flex-shrink-0 ${inst.status === 'connected' ? 'bg-emerald-500 border-emerald-600' : 'bg-gray-300 border-gray-400'}`}>
+                                                            <div className={`w-12 h-12 rounded-full flex items-center justify-center overflow-hidden border-2 flex-shrink-0 ${['connected', 'open', 'authenticated'].includes(inst.status || '') ? 'bg-emerald-500 border-emerald-600' : 'bg-gray-300 border-gray-400'}`}>
                                                                 {(inst.avatar || inst.profilePictureUrl) && !instanceAvatarErrors[inst.instance] ? (
                                                                     <img
                                                                         src={inst.avatar || inst.profilePictureUrl || ''}
@@ -1587,8 +1520,8 @@ export default function WhatsAppInboxPage() {
                                                                 <span className="text-[13px] text-gray-500 truncate">{inst.phone}</span>
                                                             </div>
                                                             <div className="flex items-center gap-2 pr-2 flex-shrink-0">
-                                                                <span className={`px-3 py-1 rounded-full text-[12px] font-bold ring-1 ring-inset ${inst.status === 'connected' ? 'bg-green-50 text-[#00a884] ring-green-600/10' : 'bg-gray-100 text-gray-500 ring-gray-200'}`}>
-                                                                    {inst.status === 'connected' ? 'Ativa' : 'Desconectada'}
+                                                                <span className={`px-3 py-1 rounded-full text-[12px] font-bold ring-1 ring-inset ${['connected', 'open', 'authenticated'].includes(inst.status || '') ? 'bg-green-50 text-[#00a884] ring-green-600/10' : 'bg-gray-100 text-gray-500 ring-gray-200'}`}>
+                                                                    {['connected', 'open', 'authenticated'].includes(inst.status || '') ? 'Ativa' : 'Desconectada'}
                                                                 </span>
                                                             </div>
                                                         </button>
@@ -1759,14 +1692,12 @@ export default function WhatsAppInboxPage() {
                             <MessageArea
                                 scrollRef={scrollRef}
                                 onScroll={() => {
-                                    const el = scrollRef.current;
-                                    if (!el || msgLoading || historyLoadingMore || !hasMoreHistory || !selectedChat) return;
-                                    if (el.scrollTop < 120) {
-                                        loadHistory(selectedChat.phone, selectedChat.instance_name, selectedChat.remote_jid, {
-                                            reset: false,
-                                            filters: historyFilters,
-                                        }, selectedChat.chat_id);
-                                    }
+                                    // Called by Virtuoso startReached — load older messages
+                                    if (msgLoading || historyLoadingMore || !hasMoreHistory || !selectedChat) return;
+                                    loadHistory(selectedChat.phone, selectedChat.instance_name, selectedChat.remote_jid, {
+                                        reset: false,
+                                        filters: historyFilters,
+                                    }, selectedChat.chat_id);
                                 }}
                                 msgLoading={msgLoading}
                                 historyLoadingMore={historyLoadingMore}

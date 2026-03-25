@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { produce } from 'immer';
 import { WhatsAppInstance as Instance } from './types';
 import { whatsappService } from '../../services/whatsappService';
 
@@ -161,7 +162,10 @@ export const useWhatsAppStore = create<WhatsAppStoreState>((set, get) => ({
                 return;
             }
 
-            const newInstances = data.instances || [];
+            const newInstances = (data.instances || []).map((inst: any) => ({
+                ...inst,
+                status: inst.status ? inst.status.toLowerCase() : inst.status
+            }));
             const newSaved = data.saved || [];
 
             set((state) => {
@@ -189,9 +193,15 @@ export const useWhatsAppStore = create<WhatsAppStoreState>((set, get) => ({
                     return ni;
                 });
 
+                // [FIX] Sincroniza a activeInstance com os novos dados para refletir mudanças de status (ex: de 'qr' para 'connected')
+                const updatedActiveInstance = state.activeInstance 
+                    ? instancesWithAvatarPersistence.find(i => i.instance === state.activeInstance?.instance) || state.activeInstance 
+                    : null;
+
                 return {
                     instances: instancesWithAvatarPersistence,
-                    saved: newSaved
+                    saved: newSaved,
+                    activeInstance: updatedActiveInstance
                 };
             });
         } catch (error) {
@@ -283,18 +293,22 @@ export const useWhatsAppStore = create<WhatsAppStoreState>((set, get) => ({
                 const rJid = String(chat.remote_jid || chat.id || '');
                 const isGroup = rJid.endsWith('@g.us');
                 
+                // [FIX AVATAR] Preserva o avatar_url local se o novo for nulo para evitar que suma ao atualizar a lista
+                const existingChat = get().chats.find((c: any) => normalizeJid(c.remote_jid) === normalizeJid(rJid));
+                const avatar = chat.avatar_url || existingChat?.avatar_url || null;
+
                 let displayName = '';
                 if (isGroup) {
                     displayName = groupMap[rJid] || chat.subject || chat.lead_name || chat.phone || 'Grupo';
                 } else {
-                    // Ordem de prioridade: Agenda (contactMap) > CRM (lead_name) > PushName/Subject > Telefone
                     displayName = contactMap[rJid] || chat.lead_name || chat.subject || chat.phone || rJid.split('@')[0];
                 }
 
                 return {
                     ...chat,
                     remote_jid: rJid,
-                    displayName: displayName
+                    displayName: displayName,
+                    avatar_url: avatar
                 };
             });
 
@@ -385,72 +399,88 @@ export const useWhatsAppStore = create<WhatsAppStoreState>((set, get) => ({
             }
         }
 
-        const state = get();
-        const index = state.chats.findIndex((c) => normalizeJid(c.remote_jid) === target);
-        
-        if (index === -1) {
-            const fallbackPhone = target.replace(/\D/g, '') || target;
-            const isNewGroupJid = remoteJid.endsWith('@g.us');
-            const newChat: WhatsAppChat = {
-                id: -Date.now(),
-                instance_name: instanceName || 'main',
-                remote_jid: remoteJid,
-                phone: fallbackPhone,
-                lead_id: null,
-                lead_name: null,
-                lead_status: null,
-                lead_email: null,
-                lead_type: null,
-                avatar_url: null,
-                bio: null,
-                subject: isNewGroupJid ? fallbackPhone : (pushName || fallbackPhone),
-                displayName: isNewGroupJid ? fallbackPhone : (pushName || fallbackPhone),
-                last_message_text: text || 'Midia',
-                last_message_time: timestampIso,
-                last_message_from_me: fromMe ? 1 : 0,
-                last_message_status: status || (fromMe ? 'sent' : 'delivered'),
-                unread_count: fromMe ? 0 : 1,
-                labels: [],
-                last_message_payload: messagePayload || null,
-                last_message_type: messageType || (text ? 'text' : null),
-                last_message_participant_name: participantName || null,
-            };
+        set(produce((state) => {
+            const index = state.chats.findIndex((c: any) => normalizeJid(c.remote_jid) === target);
+            const isGroupJid = remoteJid.endsWith('@g.us');
+            
+            if (index === -1) {
+                const fallbackPhone = target.replace(/\D/g, '') || target;
+                const baseText = text || 'Mídia';
+                
+                // [FIX] Nome do remetente APENAS no preview se for grupo
+                const previewText = (isGroupJid && pushName && !fromMe) 
+                    ? `${pushName}: ${baseText}` 
+                    : baseText;
 
-            set({
-                chats: [newChat, ...state.chats],
-                presenceByJid: prunePresence(state.presenceByJid),
-            });
-            return true;
-        }
+                const newChat: WhatsAppChat = {
+                    id: -Date.now(),
+                    instance_name: instanceName || 'main',
+                    remote_jid: remoteJid,
+                    phone: fallbackPhone,
+                    lead_id: null,
+                    lead_name: null,
+                    lead_status: null,
+                    lead_email: null,
+                    lead_type: null,
+                    avatar_url: null,
+                    bio: null,
+                    // [FIX] Nunca usa pushName (remetente) como título de grupo
+                    subject: isGroupJid ? fallbackPhone : (pushName || fallbackPhone),
+                    displayName: isGroupJid ? fallbackPhone : (pushName || fallbackPhone),
+                    last_message_text: previewText,
+                    last_message_time: timestampIso || new Date().toISOString(),
+                    last_message_from_me: fromMe ? 1 : 0,
+                    last_message_status: status || (fromMe ? 'sent' : 'delivered'),
+                    unread_count: fromMe ? 0 : 1,
+                    labels: [],
+                    last_message_payload: messagePayload || null,
+                    last_message_type: messageType || (text ? 'text' : null),
+                    last_message_participant_name: participantName || null,
+                };
 
-        const updatedChats = [...state.chats];
-        const [chat] = updatedChats.splice(index, 1);
-        const shouldIncUnread = !fromMe && state.activeRemoteJid !== target;
+                state.chats.unshift(newChat);
+                state.presenceByJid = prunePresence(state.presenceByJid);
+                state.chats = sortChats(state.chats);
+                return;
+            }
 
-        const rJid = String(remoteJid || chat.remote_jid);
-        const isGroupJid = rJid.endsWith('@g.us');
-        
-        // FASE 8 - Atualizar e mover para o topo (sortChats gerencia a ordem final)
-        const updated: WhatsAppChat = {
-            ...chat,
-            remote_jid: rJid,
-            subject: isGroupJid ? chat.subject : (pushName || chat.subject || chat.phone),
-            displayName: isGroupJid ? (chat.displayName || chat.subject) : (pushName || chat.displayName || chat.subject || chat.phone),
-            last_message_text: text || chat.last_message_text || 'Midia',
-            last_message_time: timestampIso,
-            last_message_from_me: fromMe ? 1 : 0,
-            last_message_status: status || chat.last_message_status || (fromMe ? 'sent' : 'delivered'),
-            last_message_payload: messagePayload || chat.last_message_payload,
-            last_message_type: messageType || chat.last_message_type || (text ? 'text' : null),
-            last_message_participant_name: participantName || chat.last_message_participant_name,
-            unread_count: shouldIncUnread ? (chat.unread_count || 0) + 1 : chat.unread_count,
-        };
+            const chat = state.chats[index];
+            const shouldIncUnread = !fromMe && state.activeRemoteJid !== target;
 
-        const finalChats = [updated, ...updatedChats];
-        set({
-            chats: sortChats(finalChats),
-            presenceByJid: prunePresence(state.presenceByJid),
-        });
+            chat.remote_jid = remoteJid || chat.remote_jid;
+            
+            // [FIX] REGRA OBRIGATÓRIA: Nunca atualizar NOME DO CHAT com nome do remetente se for Grupo (@g.us)
+            if (!isGroupJid && pushName) {
+                chat.subject = pushName || chat.subject || chat.phone;
+                chat.displayName = pushName || chat.displayName || chat.subject || chat.phone;
+            }
+
+            // [FIX] Nome do remetente deve ir APENAS para o texto de preview em grupos
+            const baseText = text || chat.last_message_text || 'Mídia';
+            chat.last_message_text = (isGroupJid && pushName && !fromMe) 
+                ? `${pushName}: ${baseText}` 
+                : baseText;
+
+            if (timestampIso) chat.last_message_time = timestampIso;
+            chat.last_message_from_me = fromMe ? 1 : 0;
+            chat.last_message_status = status || chat.last_message_status || (fromMe ? 'sent' : 'delivered');
+            if (messagePayload) chat.last_message_payload = messagePayload;
+            chat.last_message_type = messageType || chat.last_message_type || (text ? 'text' : null);
+            if (participantName) chat.last_message_participant_name = participantName;
+            
+            if (shouldIncUnread) {
+                chat.unread_count = (chat.unread_count || 0) + 1;
+            }
+            
+            if (index !== 0) {
+                state.chats.splice(index, 1);
+                state.chats.unshift(chat);
+            }
+            
+            state.presenceByJid = prunePresence(state.presenceByJid);
+            state.chats = sortChats(state.chats);
+        }));
+
         return true;
     },
 

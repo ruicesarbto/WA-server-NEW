@@ -12,6 +12,7 @@ const { fetchPersonStatus, fetchProfileUrl, fetchBusinessprofile, fetchGroupMeta
 const { sendTextMsg, sendMedia, sendPollMsg } = require('../functions/x.js')
 const mime = require('mime-types');
 const { checkPlanExpiry } = require('../middlewares/planValidator.js')
+const { cacheGetInbox, cacheWarmInbox } = require('../queues/cache.js')
 
 const PINNED_TABLE_NAME = 'chat_pinned'
 let ensurePinnedTablePromise = null
@@ -41,57 +42,90 @@ async function ensurePinnedTable() {
     return ensurePinnedTablePromise
 }
 
-// get my chats 
+// get my chats — Redis Hot Cache first, PostgreSQL fallback
 router.get("/get_my_chats", validateUser, checkPlanExpiry, async (req, res) => {
     try {
         const { instance } = req.query
+        const uid = req.decode.uid
 
         let selIns
 
         if (instance) {
-
             selIns = instance
-
-            await query(`UPDATE user SET opened_chat_instance = ? WHERE uid = ?`, [
-                instance,
-                req.decode.uid
-            ])
+            // Fire-and-forget: não bloqueia a resposta
+            query(`UPDATE "user" SET opened_chat_instance = ? WHERE uid = ?`, [instance, uid]).catch(() => {})
         } else {
-
-            // getting already selected instance 
             if (req?.user?.opened_chat_instance) {
                 selIns = req?.user?.opened_chat_instance
             } else {
-
-                // setting the instance 
-                const getInstance = await query(`SELECT * FROM instance WHERE uid = ? LIMIT 1`, [
-                    req.decode.uid
-                ])
-
+                const getInstance = await query(`SELECT * FROM instance WHERE uid = ? LIMIT 1`, [uid])
                 const selInsId = getInstance[0]?.instance_id
                 selIns = selInsId
-
-                await query(`UPDATE user SET opened_chat_instance = ? WHERE uid = ?`, [
-                    selInsId,
-                    req.decode.uid
-                ])
+                query(`UPDATE "user" SET opened_chat_instance = ? WHERE uid = ?`, [selInsId, uid]).catch(() => {})
             }
         }
 
-        // testing the instance 
         const session = await getSession(selIns)
-
         if (!session) {
             return res.json({ msg: "Instance not found. Please re add the instance" })
         }
 
         const userData = session?.authState?.creds?.me || session.user
 
-        const data = await query(`SELECT * FROM chats WHERE uid = ? AND instance_id = ?`, [
-            req.decode.uid,
-            selIns
-        ])
+        // ── 1. Tentar Redis Hot Cache (~0.5ms) ──
+        let data = null
+        try {
+            data = await cacheGetInbox(selIns)
+            if (data) {
+                console.log(`[Inbox] Cache HIT: ${data.length} chats for ${selIns}`)
+            }
+        } catch (e) {
+            console.error('[Inbox] Cache read failed, falling back to PG:', e.message)
+        }
+
+        // ── 2. Cache miss → PostgreSQL (~15-50ms) + warm cache ──
+        if (!data) {
+            console.log(`[Inbox] Cache MISS for ${selIns}, reading from PG`)
+            data = await query(`SELECT * FROM chats WHERE uid = ? AND instance_id = ? ORDER BY last_message_at DESC`, [
+                uid,
+                selIns
+            ])
+
+            // Warm the cache in background (não bloqueia a resposta)
+            if (data?.length) {
+                cacheWarmInbox(selIns, data).catch(e =>
+                    console.error('[Inbox] Cache warm failed:', e.message))
+            }
+        }
+
         res.json({ data, success: true, userData: { ...userData, selIns } })
+
+        // ── Bug 3 Fix: Background lazy fill for missing profile_image (cache-aside) ──
+        // Non-blocking: runs after response is sent, populates chats without avatars
+        ;(async () => {
+            try {
+                const chatsWithoutAvatar = (data || []).filter(c => !c.profile_image && c.sender_jid);
+                if (!chatsWithoutAvatar.length || !session) return;
+                const { fetchProfileUrl } = require('../functions/control.js');
+                for (const chat of chatsWithoutAvatar.slice(0, 20)) {
+                    try {
+                        const imgUrl = await fetchProfileUrl(session, chat.sender_jid);
+                        if (imgUrl) {
+                            await query(
+                                `UPDATE chats SET profile_image = $1 WHERE instance_id = $2 AND sender_jid = $3`,
+                                [imgUrl, selIns, chat.sender_jid]
+                            );
+                        }
+                    } catch {}
+                    await new Promise(r => setTimeout(r, 500)); // throttle: 500ms between requests
+                }
+                if (chatsWithoutAvatar.length > 0) {
+                    console.log(`[Inbox:LazyAvatar] Processed ${Math.min(chatsWithoutAvatar.length, 20)} chats for instance=${selIns}`);
+                }
+            } catch (lazyErr) {
+                console.error('[Inbox:LazyAvatar] Fill failed:', lazyErr.message);
+            }
+        })();
 
     } catch (err) {
         res.json({ success: false, msg: "something went wrong", err })

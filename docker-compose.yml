@@ -14,10 +14,35 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - ./sql/import_postgresql.sql:/docker-entrypoint-initdb.d/01_schema.sql
+      - ./sql/migration_001_history_engine.sql:/docker-entrypoint-initdb.d/02_history.sql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${DBUSER:-chat_score} -d ${DBNAME:-chat_score_pg}"]
       interval: 10s
       timeout: 5s
+      retries: 5
+    networks:
+      - chat_network
+
+  # 📨 REDIS - BullMQ Queue Backend
+  redis:
+    image: redis:7-alpine
+    container_name: chat_score_redis
+    restart: unless-stopped
+    command: >
+      redis-server
+      --maxmemory 256mb
+      --maxmemory-policy noeviction
+      --save ""
+      --appendonly no
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
       retries: 5
     networks:
       - chat_network
@@ -31,6 +56,7 @@ services:
     restart: unless-stopped
     depends_on:
       - postgres
+      - redis
     ports:
       - "8001:8001"
     environment:
@@ -42,11 +68,17 @@ services:
       DBUSER: ${DBUSER:-chat_score}
       DBPASS: ${DBPASS:-postgrespassword}
       DBPORT: 5432
+      DBPOOL_MAX: ${DBPOOL_MAX:-30}
+      DBPOOL_TIMEOUT: ${DBPOOL_TIMEOUT:-5000}
+      REDIS_HOST: ${REDIS_HOST:-redis}
+      REDIS_PORT: ${REDIS_PORT:-6379}
       JWTKEY: ${JWTKEY:-NCRUp5hKovUAcZd9OwIw0BCKmjZj9JxpNCRUp5hKovUAcZd9OwIw0BCKmjZj9JxpNCRUp5hKovUAcZd9OwIw0BCKmjZj9Jxp}
       APP_NAME: ${APP_NAME:-ScoreChat}
       FRONTENDURI: ${FRONTENDURI:-http://localhost:3000}
       BACKURI: ${BACKURI:-http://localhost:8001}
       STRIPE_LANG: en
+      # Auth state: "file" (dev) ou "postgres" (producao - recomendado)
+      AUTH_STATE_STORE: ${AUTH_STATE_STORE:-postgres}
     volumes:
       - ./sessions:/app/sessions
       - ./public/media:/app/public/media
@@ -69,6 +101,7 @@ services:
       NODE_ENV: ${NODE_ENV:-development}
       NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8001/api}
       NEXT_PUBLIC_SOCKET_URL: ${NEXT_PUBLIC_SOCKET_URL:-http://localhost:8001}
+      BACKEND_INTERNAL_URL: http://backend:8001
     depends_on:
       - backend
     networks:
@@ -80,3 +113,4 @@ networks:
 
 volumes:
   postgres_data:
+  redis_data:

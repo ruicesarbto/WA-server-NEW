@@ -5,7 +5,7 @@ export interface Message {
     text: string;
     type: string;
     direction: 'in' | 'out';
-    status: 'sending' | 'pending' | 'sent' | 'delivered' | 'read' | 'deleted' | 'failed';
+    status: 'sending' | 'pending' | 'sent' | 'server_ack' | 'delivered' | 'read' | 'played' | 'deleted' | 'failed' | 'error';
     timestamp: string;
     media_url?: string;
     media_type?: string;
@@ -15,6 +15,7 @@ export interface Message {
     quoted_message_text?: string | null;
     quoted_participant?: string | null;
     reactions?: Record<string, string> | null;
+    reaction?: string | null;      // Novo: emoji único do pipeline em tempo real
     message_payload?: any;
     participant?: string | null;
 }

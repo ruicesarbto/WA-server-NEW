@@ -6,7 +6,6 @@ const randomstring = require('randomstring')
 const path = require('path')
 const bcrypt = require('bcryptjs')
 const { addON, appVersion } = require('../env.js')
-const mysql = require('mysql2/promise');
 const { getFileExtension, folderExists, downloadAndExtractFile } = require('../functions/function.js')
 
 router.get('/get-one-translation', async (req, res) => {

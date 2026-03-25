@@ -16,6 +16,7 @@ const {
   rzCapturePayment,
 } = require("../functions/function.js");
 const randomstring = require("randomstring");
+const { cacheGetMessages, cacheWarmMessages, cacheMarkRead } = require("../queues/cache.js");
 // Lazy require used below for circular dep
 const csv = require("csv-parser");
 const mime = require("mime-types");
@@ -196,22 +197,102 @@ router.get("/get_me", validateUser, async (req, res) => {
   }
 });
 
-// get chats convo
+// get chats convo — Redis Hot Cache first, PostgreSQL cursor fallback
+// First load (no cursor): Redis LIST (~1ms) → 50 most recent messages
+// Load more (cursor set): PostgreSQL cursor pagination → older messages
 router.post("/get_convo", validateUser, async (req, res) => {
   try {
-    const { chatId } = req.body;
+    const { chatId, instanceId, cursor, limit: rawLimit } = req.body;
 
-    const filePath = `${__dirname}/../conversations/inbox/${req.decode.uid}/${chatId}.json`;
-    await query(`UPDATE chats SET is_opened = ? WHERE chat_id = ?`, [
-      1,
-      chatId,
-    ]);
+    if (!chatId) {
+      return res.json({ success: false, msg: "chatId is required" });
+    }
 
-    const data = readJSONFile(filePath, 100);
-    res.json({ data, success: true });
+    const uid = req.decode.uid;
+    const pageSize = Math.min(parseInt(rawLimit) || 50, 200);
+
+    // Resolve instance
+    let instance = instanceId;
+    if (!instance) {
+      const userRow = await query(`SELECT opened_chat_instance FROM "user" WHERE uid = ?`, [uid]);
+      instance = userRow[0]?.opened_chat_instance;
+    }
+    if (!instance) {
+      return res.json({ success: false, msg: "No active instance" });
+    }
+
+    // Mark chat as read (PG + Redis, fire-and-forget)
+    query(
+      `UPDATE chats SET is_read = TRUE, unread_count = 0 WHERE instance_id = ? AND chat_id = ?`,
+      [instance, chatId]
+    ).catch(() => {});
+    cacheMarkRead(instance, chatId).catch(() => {});
+
+    // ── CURSOR SET → Sempre vai para o PostgreSQL (mensagens antigas) ──
+    if (cursor) {
+      const rows = await query(
+        `SELECT msg_id, chat_id, instance_id, sender_jid, sender_name,
+                from_me, msg_type, msg_body, msg_data, media_url,
+                quoted_msg_id, quoted_sender, status, route, reaction,
+                is_starred, message_timestamp
+         FROM messages
+         WHERE instance_id = ? AND chat_id = ? AND message_timestamp < ?
+         ORDER BY message_timestamp DESC
+         LIMIT ?`,
+        [instance, chatId, cursor, pageSize]
+      );
+
+      const messages = (rows || []).reverse();
+      const nextCursor = messages.length > 0 ? messages[0].message_timestamp : null;
+      const hasMore = (rows || []).length === pageSize;
+
+      return res.json({ data: messages, success: true, nextCursor, hasMore });
+    }
+
+    // ── FIRST LOAD (no cursor) → Tentar Redis Hot Cache (~1ms) ──
+    let messages = null;
+    try {
+      messages = await cacheGetMessages(instance, chatId);
+      if (messages) {
+        console.log(`[GetConvo] Cache HIT: ${messages.length} msgs for ${chatId}`);
+      }
+    } catch (e) {
+      console.error('[GetConvo] Cache read failed:', e.message);
+    }
+
+    // ── Cache miss → PostgreSQL (~15ms) + warm cache ──
+    if (!messages) {
+      console.log(`[GetConvo] Cache MISS for ${chatId}, reading from PG`);
+      const rows = await query(
+        `SELECT msg_id, chat_id, instance_id, sender_jid, sender_name,
+                from_me, msg_type, msg_body, msg_data, media_url,
+                quoted_msg_id, quoted_sender, status, route, reaction,
+                is_starred, message_timestamp
+         FROM messages
+         WHERE instance_id = ? AND chat_id = ?
+         ORDER BY message_timestamp DESC
+         LIMIT ?`,
+        [instance, chatId, pageSize]
+      );
+
+      messages = (rows || []).reverse();
+
+      // Warm Redis cache in background
+      if (messages.length) {
+        cacheWarmMessages(instance, chatId, messages).catch(e =>
+          console.error('[GetConvo] Cache warm failed:', e.message));
+      }
+    }
+
+    // Compute cursor for infinite scroll
+    const nextCursor = messages.length > 0 ? messages[0].message_timestamp : null;
+    // hasMore = true if we got a full page (user can scroll up for more from PG)
+    const hasMore = messages.length >= pageSize;
+
+    res.json({ data: messages, success: true, nextCursor, hasMore });
   } catch (err) {
     console.log(err);
-    res.json({ err, success: false, msg: "Something went wrong", err });
+    res.json({ success: false, msg: "Something went wrong", err: err.message });
   }
 });
 

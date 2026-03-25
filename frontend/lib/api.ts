@@ -74,7 +74,8 @@ async function getWhatsAppInstances() {
     );
 
     const instances = allRaw.map((r: any) => {
-        const userData = typeof r.userData === 'string' ? (() => { try { return JSON.parse(r.userData); } catch { return null; } })() : (r.userData || null);
+        const rawUd = r.userdata ?? r.userData;
+        const userData = typeof rawUd === 'string' ? (() => { try { return JSON.parse(rawUd); } catch { return null; } })() : (rawUd || null);
         const live = liveMap[r.instance_id];
         const liveUser = live?.userData || userData;
         const isConnected = connectedIds.has(r.instance_id);
@@ -157,79 +158,61 @@ async function updateWhatsAppPhoto(name: string) {
 // ─── CHATS ────────────────────────────────────────────────────────────────────
 async function getWhatsAppChats(instance: string) {
     const res = await get(`/api/inbox/get_my_chats?instance=${encodeURIComponent(instance)}`);
-    // Backend fields: id, chat_id, sender_name, sender_mobile, sender_jid,
-    //   profile_image, last_message (JSON), last_message_came (Unix), instance_id, is_opened
+    // New PG schema: chats table with columns: id, chat_id, instance_id, uid,
+    //   sender_name, sender_jid, profile_image, chat_status, is_pinned, is_muted,
+    //   is_read, unread_count, last_message (TEXT), last_message_at (TIMESTAMPTZ),
+    //   last_message_type, group_metadata, etc.
     const raw: any[] = res?.data || [];
     const chats = raw.map((r: any) => {
-        // Parse the last_message JSON string
-        let lastMsgText: string | null = null;
-        let lastMsgFromMe: number | null = null;
-        let lastMsgTime: string | null = null;
-        let lastMsgStatus: string | null = null;
-        try {
-            const lm = typeof r.last_message === 'string' ? JSON.parse(r.last_message) : (r.last_message || null);
-            if (lm) {
-                const rawText = lm?.msgContext?.text || lm?.text || null;
-                // For media messages with no caption, show a type label
-                if (!rawText && lm?.type) {
-                    const t = String(lm.type).toLowerCase();
-                    if (t === 'image') lastMsgText = '📷 Imagem';
-                    else if (t === 'video') lastMsgText = '🎬 Vídeo';
-                    else if (t === 'audio' || t === 'ptt') lastMsgText = '🎤 Áudio';
-                    else if (t === 'document') lastMsgText = '📄 Documento';
-                    else if (t === 'sticker') lastMsgText = '🖼️ Figurinha';
-                    else lastMsgText = rawText;
-                } else {
-                    lastMsgText = rawText;
-                }
-                lastMsgFromMe = lm?.route === 'outgoing' ? 1 : 0;
-                lastMsgTime = lm?.timestamp ? new Date(Number(lm.timestamp) * 1000).toISOString() : null;
-                // Extract delivery status (only relevant for outgoing messages)
-                if (lastMsgFromMe === 1) {
-                    const s = lm?.status;
-                    if (s === 'read' || s === 4) lastMsgStatus = 'read';
-                    else if (s === 'delivered' || s === 3) lastMsgStatus = 'delivered';
-                    else if (s === 'sent' || s === 2) lastMsgStatus = 'sent';
-                    else if (s === 'pending' || s === 1) lastMsgStatus = 'pending';
-                    else if (s === 'failed' || s === 0) lastMsgStatus = 'failed';
-                    else lastMsgStatus = 'sent';
-                }
-            }
-        } catch { /* ignore parse errors */ }
+        // last_message is now a plain TEXT column (not JSON)
+        let lastMsgText: string | null = r.last_message || null;
+        const lastMsgType = r.last_message_type || 'text';
 
-        // Fallback timestamp from last_message_came (Unix seconds)
-        if (!lastMsgTime && r.last_message_came) {
-            lastMsgTime = new Date(Number(r.last_message_came) * 1000).toISOString();
+        // Show type labels for media messages with no text
+        if (!lastMsgText && lastMsgType !== 'text') {
+            const t = String(lastMsgType).toLowerCase();
+            if (t === 'image') lastMsgText = 'Imagem';
+            else if (t === 'video') lastMsgText = 'Video';
+            else if (t === 'audio' || t === 'ptt') lastMsgText = 'Audio';
+            else if (t === 'document') lastMsgText = 'Documento';
+            else if (t === 'sticker') lastMsgText = 'Figurinha';
+            else lastMsgText = `[${lastMsgType}]`;
         }
 
-        const phone = r.sender_mobile || r.phone || '';
-        const jid   = r.sender_jid   || (phone ? `${phone}@s.whatsapp.net` : '');
-        const name  = r.sender_name  || r.name || null;
+        // last_message_at is ISO/TIMESTAMPTZ — use directly
+        const lastMsgTime: string | null = r.last_message_at
+            ? new Date(r.last_message_at).toISOString()
+            : null;
+
+        const jid = r.sender_jid || r.chat_id || '';
+        const phone = jid.split('@')[0] || '';
+        const name = r.sender_name || null;
 
         return {
             id: r.id,
-            chat_id: r.chat_id || null,          // base64 key — used for get_convo
+            chat_id: r.chat_id || null,
             instance_name: r.instance_id || instance,
             remote_jid: jid,
             phone,
-            lead_id: r.lead_id || null,
+            lead_id: null,
             lead_name: name,
             lead_status: r.chat_status || null,
             lead_email: null,
             lead_type: null,
-            avatar_url: r.profile_image || r.profile_pic || r.avatar_url || null,
+            avatar_url: r.profile_image || null,
             bio: null,
-            subject: null,
+            subject: jid.endsWith('@g.us') ? (r.sender_name || null) : null,
             displayName: name || phone || jid.split('@')[0] || null,
             last_message_text: lastMsgText,
             last_message_time: lastMsgTime,
-            last_message_from_me: lastMsgFromMe,
-            last_message_status: lastMsgStatus,
-            unread_count: r.is_opened ? 0 : 1,
+            last_message_from_me: null,   // not tracked at chat level yet
+            last_message_status: null,
+            last_message_type: lastMsgType,
+            unread_count: r.unread_count || 0,
             labels: [],
-            is_pinned: 0,
-            is_archived: 0,
-            muted_until: null,
+            is_pinned: r.is_pinned ? 1 : 0,
+            is_archived: r.chat_status === 'archived' ? 1 : 0,
+            muted_until: r.is_muted ? '2099-01-01' : null,
         };
     });
     return { chats, userData: res?.userData };
@@ -251,33 +234,57 @@ async function getWhatsAppHistory(
     offset = 0,
     instance?: string,
     remoteJid?: string,
-    chatId?: string,        // base64 chat_id — backend key for conversation file
+    chatId?: string,
+    cursor?: string | null,
 ) {
-    // Backend stores conversations as files named by chat_id (base64 key)
-    const res = await post('/api/user/get_convo', { chatId: chatId || remoteJid });
+    // Cursor-based pagination from PostgreSQL messages table.
+    // cursor = ISO timestamp of oldest message on screen (for "load more").
+    // First load: no cursor → newest 50 messages.
+    const body: any = {
+        chatId: remoteJid || chatId,
+        instanceId: instance,
+        limit,
+    };
+    if (cursor) body.cursor = cursor;
 
-    // Transform backend message format → frontend Message format
+    const res = await post('/api/user/get_convo', body);
+
+    // Backend returns rows in chronological order (already reversed from DESC)
+    // Columns: msg_id, chat_id, sender_jid, sender_name, from_me, msg_type,
+    //          msg_body, msg_data, media_url, quoted_msg_id, quoted_sender,
+    //          status, route, reaction, is_starred, message_timestamp
     const rawMsgs: any[] = Array.isArray(res?.data) ? res.data : [];
-    const messages = rawMsgs.map((r: any, idx: number) => ({
-        id: idx,
-        chat_id: 0,
-        message_id: r.msgId || `${r.timestamp}-${idx}`,
-        text: r.msgContext?.text || r.text || '',
-        type: r.type || 'text',
-        direction: r.route === 'outgoing' ? 'out' : 'in',
-        status: r.status || (r.route === 'outgoing' ? 'sent' : 'pending'),
-        timestamp: r.timestamp ? new Date(Number(r.timestamp) * 1000).toISOString() : new Date().toISOString(),
-        media_url: r.msgContext?.url || r.msgContext?.mediaUrl || r.media_url || null,
-        media_type: r.type !== 'text' ? r.type : undefined,
-        reactions: r.reaction ? { [r.reaction]: r.reaction } : null,
-        message_payload: r,
-        participant: r.senderName || null,
-    }));
+    const messages = rawMsgs.map((r: any, idx: number) => {
+        const ts = r.message_timestamp
+            ? new Date(r.message_timestamp).toISOString()
+            : new Date().toISOString();
+        const msgData = typeof r.msg_data === 'string'
+            ? (() => { try { return JSON.parse(r.msg_data); } catch { return null; } })()
+            : (r.msg_data || null);
+
+        return {
+            id: idx,
+            chat_id: 0,
+            message_id: r.msg_id || `${ts}-${idx}`,
+            text: r.msg_body || '',
+            type: r.msg_type || 'text',
+            direction: r.from_me ? 'out' : 'in',
+            status: r.status || (r.from_me ? 'sent' : 'delivered'),
+            timestamp: ts,
+            media_url: r.media_url || msgData?.url || null,
+            media_type: r.msg_type !== 'text' ? r.msg_type : undefined,
+            reactions: r.reaction ? { [r.reaction]: r.reaction } : null,
+            message_payload: r,
+            participant: r.sender_name || null,
+            quoted_message_id: r.quoted_msg_id || null,
+            quoted_participant: r.quoted_sender || null,
+        };
+    });
 
     return {
-        messages: messages.reverse(), // backend returns ASC, frontend wants DESC for prepend
-        hasMore: false,
-        nextOffset: offset + messages.length,
+        messages,
+        hasMore: res?.hasMore || false,
+        nextCursor: res?.nextCursor || null,
     };
 }
 

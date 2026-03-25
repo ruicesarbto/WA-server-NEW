@@ -154,9 +154,16 @@ app.use("/api/plan", privateApiCors, planRoute);
 
 const { warmerLoopInit } = require("./loops/warmerLoop.js");
 const { broadcastLoopInit } = require("./loops/broadcastLoop.js");
+const { startAllWorkers, stopAllWorkers } = require("./queues/workers.js");
 
 // ✅ Frontend agora é servido pelo Next.js (porta 3000)
-// ❌ Removido: express.static - Backend apenas serve APIs
+// ❌ Removido: express.static genérico - Backend apenas serve APIs
+// ✅ Re-habilitado: express.static APENAS para /media/ (mídias do WhatsApp baixadas pelo MediaWorker)
+app.use('/media', express.static(path.join(__dirname, 'public', 'media'), {
+    maxAge: '7d',           // Cache de 7 dias (mídias WhatsApp são imutáveis)
+    etag: true,
+    lastModified: true,
+}));
 
 // ✅ Health check para Docker
 app.get("/health", (req, res) => {
@@ -181,6 +188,7 @@ app.get("/api", (req, res) => {
 
 const server = app.listen(process.env.PORT || 8001, '0.0.0.0', () => {
   init();
+  startAllWorkers();
   setTimeout(() => {
     // broadcastLoopInit(); // Desabilitado por enquanto (tem recursão infinita)
     // warmerLoopInit(); // Desabilitado por enquanto (tem recursão infinita)
@@ -193,4 +201,8 @@ const io = initializeSocket(server);
 
 module.exports = io;
 
-nodeCleanup(cleanup);
+nodeCleanup((exitCode, signal) => {
+  cleanup(exitCode, signal);
+  stopAllWorkers().catch(() => {});
+  require('./queues/cache').closeCacheClient().catch(() => {});
+});

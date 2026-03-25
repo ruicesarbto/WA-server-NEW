@@ -113,7 +113,8 @@ router.post("/status", validateUser, async (req, res) => {
     const getDb = await query(`SELECT * FROM instance WHERE instance_id = ?`, [id]);
     let existingImgUrl = null;
     try {
-      const existing = typeof getDb[0]?.userData === 'string' ? JSON.parse(getDb[0].userData) : null;
+      const rawUd = getDb[0]?.userdata ?? getDb[0]?.userData;
+      const existing = typeof rawUd === 'string' ? JSON.parse(rawUd) : (rawUd || null);
       existingImgUrl = existing?.imgUrl || null;
     } catch (_) {}
 
@@ -273,7 +274,8 @@ router.get("/get_instances_with_status", validateUser, async (req, res) => {
           // Preserve imgUrl from previously saved userData — creds.me doesn't carry it
           let existingImgUrl = null;
           try {
-            const existing = typeof i.userData === 'string' ? JSON.parse(i.userData) : (i.userData || null);
+            const rawUd = i.userdata ?? i.userData;
+            const existing = typeof rawUd === 'string' ? JSON.parse(rawUd) : (rawUd || null);
             existingImgUrl = existing?.imgUrl || null;
           } catch (_) {}
 
@@ -319,33 +321,37 @@ router.post("/del_ins", validateUser, async (req, res) => {
     const { id } = req.body;
 
     if (!id) {
-      return res.json({ msg: "Invalid request" });
+      return res.json({ success: false, msg: "Invalid request (missing ID)" });
     }
 
-    const chekSession = await getSession(id);
+    const session = await getSession(id);
 
-    if (!chekSession) {
-      await query(`DELETE FROM instance WHERE instance_id = ?`, [id]);
-      return res.json({ msg: "Session was deleted", success: true });
+    if (session) {
+      console.log(`[SessionRoute] Logging out and deleting session: ${id}`);
+      try {
+        // Tentativa de logout formal no WhatsApp
+        await session.logout();
+      } catch (logoutErr) {
+        console.warn(`[SessionRoute] Logout failed for ${id} (ignoring):`, logoutErr.message);
+        // Se falhar (ex: já desconectado), seguimos para deletar localmente
+      }
+    } else {
+      console.log(`[SessionRoute] No active session in memory for ${id}, proceeding with database cleanup.`);
     }
 
-    const session = getSession(id);
+    // Faxina profunda (Redis, Disco, PG History/Auth)
+    await deleteSession(id, session?.isLegacy);
 
-    try {
-      await session.logout();
-    } catch {
-    } finally {
-      deleteSession(id, session?.isLegacy);
-      await query(`DELETE FROM instance WHERE instance_id = ?`, [id]);
-    }
+    // Deletar da tabela instance (PostgreSQL)
+    await query(`DELETE FROM instance WHERE instance_id = ?`, [id]);
 
     res.json({
       success: true,
-      msg: "Instnace was deleted",
+      msg: "Instance and all related data were deleted successfully",
     });
   } catch (err) {
-    res.json({ success: false, msg: "something went wrong" });
-    console.log(err);
+    console.error(`[SessionRoute:Error] Failed to delete instance ${req.body.id}:`, err);
+    res.json({ success: false, msg: "Something went wrong while deleting instance" });
   }
 });
 

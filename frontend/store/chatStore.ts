@@ -1,4 +1,5 @@
 import { create } from "zustand"
+import { produce } from "immer"
 
 export const useChatStore = create<any>((set: any, get: any) => ({
   chats: {},
@@ -18,17 +19,21 @@ export const useChatStore = create<any>((set: any, get: any) => ({
   },
 
   receiveMessage: (msg: any) => {
-    set((state: any) => {
+    set(produce((state: any) => {
       // Normalize chatId (remoteJid often used as chatId in frontend)
       const chatId = msg.chatId || msg.remote_jid || msg.remoteJid;
-      if (!chatId) return state;
+      if (!chatId) return;
 
-      const list = state.messages[chatId] || [];
+      if (!state.messages[chatId]) {
+        state.messages[chatId] = [];
+      }
+      
+      const list = state.messages[chatId];
       const msgId = msg.id || msg.message_id || msg.messageId;
 
       // Deduplicate by message ID
       if (list.find((m: any) => (m.id || m.message_id || m.messageId) === msgId)) {
-        return state;
+        return;
       }
 
       // Format message for UI
@@ -44,17 +49,11 @@ export const useChatStore = create<any>((set: any, get: any) => ({
         message_payload: msg.message_payload || msg,
       };
 
-      const updatedList = [...list, newMessage].sort((a: any, b: any) => 
+      list.push(newMessage);
+      list.sort((a: any, b: any) => 
         new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
       );
-
-      return {
-        messages: {
-          ...state.messages,
-          [chatId]: updatedList
-        }
-      };
-    });
+    }));
   },
 
   sendMessage: (content: any) => {
@@ -77,23 +76,44 @@ export const useChatStore = create<any>((set: any, get: any) => ({
     })
   },
 
-  patchChat: (id: any, data: any) => set((state: any) => ({
-    chats: {
-      ...state.chats,
-      [id]: { ...(state.chats[id] || {}), ...data }
+  patchChat: (id: any, data: any) => set(produce((state: any) => {
+    if (!state.chats[id]) {
+      state.chats[id] = {};
     }
+    Object.assign(state.chats[id], data);
   })),
 
-  setMessages: (chatId: any, messages: any[]) => set((state: any) => ({
-    messages: {
-      ...state.messages,
-      [chatId]: messages.sort((a: any, b: any) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
-    }
+  setMessages: (chatId: any, messages: any[]) => set(produce((state: any) => {
+    state.messages[chatId] = messages.sort((a: any, b: any) => 
+      new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+    );
   })),
 
-  removeChat: (id: any) => set((state: any) => {
-    const next = { ...state.chats }
-    delete next[id]
-    return { chats: next }
-  })
+  removeChat: (id: any) => set(produce((state: any) => {
+    delete state.chats[id];
+  })),
+
+  // ── Mutação pontual: atualiza status de um tick sem recarregar a lista ──
+  updateMessageStatus: (chatId: string, msgId: string, status: string) =>
+    set(produce((state: any) => {
+      const list = state.messages[chatId];
+      if (!list) return;
+      
+      const msg = list.find((m: any) => (m.message_id || m.id) === msgId);
+      if (msg) {
+        msg.status = status;
+      }
+    })),
+
+  // ── Mutação pontual: atualiza reação de uma mensagem sem recarregar a lista ──
+  updateMessageReaction: (chatId: string, msgId: string, reaction: string) =>
+    set(produce((state: any) => {
+      const list = state.messages[chatId];
+      if (!list) return;
+      
+      const msg = list.find((m: any) => (m.message_id || m.id) === msgId);
+      if (msg) {
+        msg.reaction = reaction;
+      }
+    })),
 }))

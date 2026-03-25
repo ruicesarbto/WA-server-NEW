@@ -19,7 +19,7 @@ interface ThinSidebarProps {
 }
 
 export default function ThinSidebar({ activeTab, setActiveTab, activeInstance }: ThinSidebarProps) {
-    const isConnected = activeInstance?.status === 'connected';
+    const isConnected = ['connected', 'open', 'authenticated'].includes(activeInstance?.status || '');
     const router = useRouter();
 
     const renderIcon = (id: TabType, IconComponent: any, title: string) => {
@@ -64,7 +64,7 @@ export default function ThinSidebar({ activeTab, setActiveTab, activeInstance }:
                     <div className="w-8 h-8 rounded-full overflow-hidden bg-gray-200 border border-gray-300">
                         {activeInstance?.instance ? (
                             <img
-                                src={getAvatarProxyUrl({ instance: activeInstance.instance } as any, 'instance') || activeInstance.avatar || activeInstance.profilePictureUrl || ''}
+                                src={activeInstance.avatar || activeInstance.profilePictureUrl || ''}
                                 alt="Status"
                                 className="w-full h-full object-cover"
                                 onError={(e) => { e.currentTarget.style.display = 'none'; }}

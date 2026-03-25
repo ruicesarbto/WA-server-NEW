@@ -1,4 +1,6 @@
 import { io, Socket } from "socket.io-client"
+import { useChatStore } from "../store/chatStore"
+import { useWhatsAppStore } from "../pages/Inbox/whatsappStore"
 
 class ChatEngine {
   socket: Socket | null = null
@@ -44,10 +46,48 @@ class ChatEngine {
 
     this.socket.on("push_new_msg", (data: any) => {
       this.fireEvent("push_new_msg", data);
+      const r = data?.msg;
+      if (!r) return;
+      const newMsg: any = {
+          id: Date.now(),
+          chat_id: 0,
+          message_id: r.msgId || `${r.timestamp}-${Date.now()}`,
+          text: r.msgContext?.text || r.text || '',
+          type: r.type || 'text',
+          direction: r.route === 'outgoing' ? 'out' : 'in',
+          status: r.status || (r.route === 'outgoing' ? 'sent' : 'pending'),
+          timestamp: r.timestamp ? new Date(Number(r.timestamp) * 1000).toISOString() : new Date().toISOString(),
+          media_url: r.msgContext?.url || r.msgContext?.mediaUrl || r.media_url || null,
+          media_type: r.type !== 'text' ? r.type : undefined,
+          reactions: r.reaction ? { [r.reaction]: r.reaction } : null,
+          message_payload: r,
+          participant: r.senderName || null,
+          quoted_message_text: r.context?.id ? "Mensagem citada" : undefined,
+      };
+      
+      useChatStore.getState().receiveMessage({
+          ...newMsg,
+          chatId: r.remoteJid
+      });
+
+      useWhatsAppStore.getState().upsertMessageEvent({
+          remoteJid: r.remoteJid,
+          text: newMsg.text,
+          timestampIso: newMsg.timestamp,
+          fromMe: newMsg.direction === 'out',
+          status: newMsg.status as any,
+          messageId: newMsg.message_id,
+          messagePayload: r,
+          pushName: r.pushName || r.senderName,
+          instanceName: r.instanceName,
+          messageType: newMsg.type,
+          participantName: r.senderName,
+      });
     });
 
     this.socket.on("update_conversations", (data: any) => {
       this.fireEvent("update_conversations", data);
+      useWhatsAppStore.getState().fetchChats();
     });
 
     this.socket.on("user:typing", (data: any) => {
@@ -60,6 +100,14 @@ class ChatEngine {
 
     this.socket.on("push_new_reaction", (data: any) => {
       this.fireEvent("push_new_reaction", data);
+      const r = data?.reaction;
+      if (!r || !r.remoteJid) return;
+      useWhatsAppStore.getState().updateChatLastReaction(
+          r.remoteJid,
+          `Reação: ${r.text}`,
+          new Date().toISOString(),
+          r.fromMe
+      );
     });
 
     this.socket.on("chat:list", (chats: any) => {
@@ -68,6 +116,28 @@ class ChatEngine {
 
     this.socket.on("message:new", (msg: any) => {
       this.fireEvent("message:new", msg);
+    });
+
+    this.socket.on("session:connected", (data: any) => {
+      this.fireEvent("session:connected", data);
+    });
+
+    this.socket.on("media:ready", (data: any) => {
+      this.fireEvent("media:ready", data);
+    });
+
+    this.socket.on("message:status_update", (data: any) => {
+      this.fireEvent("message:status_update", data);
+      if (data?.chatId && data?.msgId && data?.status) {
+        useChatStore.getState().updateMessageStatus(data.chatId, data.msgId, data.status);
+      }
+    });
+
+    this.socket.on("message:reaction", (data: any) => {
+      this.fireEvent("message:reaction", data);
+      if (data?.chatId && data?.msgId !== undefined) {
+        useChatStore.getState().updateMessageReaction(data.chatId, data.msgId, data.reaction ?? '');
+      }
     });
 
     this.socket.on("disconnect", () => {
