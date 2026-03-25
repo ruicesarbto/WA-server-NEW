@@ -1,0 +1,12 @@
+sessions
+frontend
+.next
+out
+build
+dist
+.git
+.gitignore
+node_modules
+npm-debug.log
+__MACOSX
+*.zip
