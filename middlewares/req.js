@@ -537,6 +537,10 @@ exports.createSession = async (
           const meta = await wa.groupMetadata(chatId);
           chatName = meta?.subject || chatId;
         } catch { chatName = chatId; }
+      } else if (fromMe) {
+        // Se a mensagem partiu de mim em chat privado, o nome do chat é o JID (contato)
+        // O frontend resolverá o nome real via fetchChats ou whatsappStore
+        chatName = chatId;
       }
 
       // Buscar avatar (non-blocking, fallback = null)
@@ -692,7 +696,7 @@ exports.createSession = async (
         const userData = rawJid ? JSON.stringify({ id: rawJid, name, imgUrl: savedPath }) : null;
 
         await query(
-          `UPDATE instance SET status = 'CONNECTED', jid = ?, userData = ? WHERE instance_id = ?`,
+          `UPDATE instance SET status = 'CONNECTED', jid = ?, "userData" = ? WHERE instance_id = ?`,
           [rawJid, userData, sessionId]
         );
         console.log(`[SafePath:Session] DB updated: ${sessionId} → CONNECTED (jid=${rawJid}, hasAvatar=${!!savedPath})`);

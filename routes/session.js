@@ -121,7 +121,7 @@ router.post("/status", validateUser, async (req, res) => {
     const userData = liveUser ? { ...liveUser, imgUrl: liveUser.imgUrl || existingImgUrl } : null;
 
     await query(
-      `UPDATE instance SET userData = ?, jid = ? WHERE instance_id = ?`,
+      `UPDATE instance SET "userData" = ?, jid = ? WHERE instance_id = ?`,
       [JSON.stringify(userData), extractPhoneNumber(liveUser?.id), id]
     );
 
@@ -138,7 +138,7 @@ router.post("/status", validateUser, async (req, res) => {
   }
 });
 
-// get profile image of the instance
+// get profile image of the instance (+ download + persist)
 router.post("/get_profile_image", validateUser, async (req, res) => {
   try {
     const { instance_id } = req.body;
@@ -150,7 +150,15 @@ router.post("/get_profile_image", validateUser, async (req, res) => {
     const session = await getSession(instance_id);
     
     if (!session) {
-      return res.json({ success: false, msg: "Session not found" });
+      // Sem sessão Baileys — tenta retornar avatar do DB
+      const dbRow = await query(`SELECT "userData" FROM instance WHERE instance_id = ?`, [instance_id]);
+      let dbAvatar = null;
+      try {
+        const raw = dbRow[0]?.userData;
+        const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        dbAvatar = parsed?.imgUrl || null;
+      } catch {}
+      return res.json({ success: true, profileImage: dbAvatar, source: 'db' });
     }
 
     const userData = session?.authState?.creds?.me || session.user;
@@ -160,20 +168,75 @@ router.post("/get_profile_image", validateUser, async (req, res) => {
       return res.json({ success: false, msg: "User not authenticated" });
     }
 
-    // Baileys id is "number:device@s.whatsapp.net" — strip device suffix for profile pic
+    // Normalizar JID: "number:device@s.whatsapp.net" → "number@s.whatsapp.net"
     const jid = rawJid.includes(':')
       ? rawJid.replace(/:.*@/, '@')
       : rawJid;
 
+    // 1. Buscar URL do WhatsApp CDN
     const profileImage = await fetchProfileUrl(session, jid);
     
+    if (!profileImage) {
+      return res.json({ success: true, profileImage: null, msg: "No profile picture available" });
+    }
+
+    // 2. Baixar e salvar localmente
+    let savedPath = profileImage;
+    try {
+      const { downloadAndSaveAvatar } = require("../functions/avatar.js");
+      const localPath = await downloadAndSaveAvatar(profileImage, jid);
+      savedPath = localPath || profileImage;
+    } catch {}
+
+    // 3. Persistir no DB
+    try {
+      const dbRow = await query(`SELECT "userData" FROM instance WHERE instance_id = ?`, [instance_id]);
+      let existing = {};
+      try {
+        const raw = dbRow[0]?.userData;
+        existing = typeof raw === 'string' ? JSON.parse(raw) : (raw || {});
+      } catch {}
+      existing.imgUrl = savedPath;
+      await query(
+        `UPDATE instance SET "userData" = ? WHERE instance_id = ?`,
+        [JSON.stringify(existing), instance_id]
+      );
+    } catch {}
+
     res.json({
       success: true,
-      profileImage: profileImage || null
+      profileImage: savedPath,
+      source: 'whatsapp'
     });
     
   } catch (err) {
-    res.json({ success: false, msg: "Error fetching profile image", err });
+    res.json({ success: false, msg: "Error fetching profile image", err: err.message });
+  }
+});
+
+// Busca metadata real de um grupo via Baileys (subject, participantes)
+router.post("/sync_group_metadata", validateUser, async (req, res) => {
+  try {
+    const { remote_jid, instance } = req.body;
+    if (!remote_jid || !remote_jid.endsWith('@g.us')) {
+      return res.json({ ok: false, msg: "JID de grupo inválido" });
+    }
+
+    const session = await getSession(instance || 'main');
+    if (!session) {
+      return res.json({ ok: false, msg: "Sessão não encontrada" });
+    }
+
+    const metadata = await session.groupMetadata(remote_jid);
+    res.json({
+      ok: true,
+      subject: metadata?.subject || null,
+      desc: metadata?.desc || null,
+      participants: (metadata?.participants || []).length,
+    });
+  } catch (err) {
+    console.error('[sync_group_metadata]', err.message);
+    res.json({ ok: false, msg: err.message });
   }
 });
 
@@ -253,14 +316,31 @@ router.get("/get_instances_with_status", validateUser, async (req, res) => {
 
           const session = await getSession(i?.instance_id);
 
+          // Preservar imgUrl do DB sempre
+          let existingImgUrl = null;
+          try {
+            const rawUd = i.userdata ?? i.userData;
+            const existing = typeof rawUd === 'string' ? JSON.parse(rawUd) : (rawUd || null);
+            existingImgUrl = existing?.imgUrl || null;
+          } catch (_) {}
+
           if (!session) {
+            // Sem sessão Baileys na RAM — retorna dados do DB
+            let dbUserData = null;
+            try {
+              const rawUd = i.userdata ?? i.userData;
+              dbUserData = typeof rawUd === 'string' ? JSON.parse(rawUd) : (rawUd || null);
+            } catch (_) {}
             return {
-              session: null,
-              success: false,
+              success: true,
+              status: false,
+              state: 'disconnected',
+              userData: dbUserData,
+              i,
             };
           }
 
-          let state = states[session.ws.readyState];
+          let state = states[session.ws.readyState] || 'disconnected';
 
           state =
             state === "connected" &&
@@ -269,43 +349,37 @@ router.get("/get_instances_with_status", validateUser, async (req, res) => {
               : state;
 
           const liveUser = session?.authState?.creds?.me || session.user;
-          const status = !!liveUser;
-
-          // Preserve imgUrl from previously saved userData — creds.me doesn't carry it
-          let existingImgUrl = null;
-          try {
-            const rawUd = i.userdata ?? i.userData;
-            const existing = typeof rawUd === 'string' ? JSON.parse(rawUd) : (rawUd || null);
-            existingImgUrl = existing?.imgUrl || null;
-          } catch (_) {}
+          const isAuthenticated = !!liveUser;
 
           const userData = liveUser
             ? { ...liveUser, imgUrl: liveUser.imgUrl || existingImgUrl }
             : null;
 
-          await query(
-            `UPDATE instance SET userData = ?, jid = ? WHERE instance_id = ?`,
-            [
-              JSON.stringify(userData),
-              extractPhoneNumber(liveUser?.id),
-              i?.instance_id,
-            ]
-          );
+          // Só faz UPDATE se tiver dados novos
+          if (liveUser) {
+            await query(
+              `UPDATE instance SET "userData" = ?, jid = ? WHERE instance_id = ?`,
+              [
+                JSON.stringify(userData),
+                extractPhoneNumber(liveUser?.id),
+                i?.instance_id,
+              ]
+            );
+          }
 
           return {
             success: true,
-            status,
+            status: isAuthenticated,
+            state,
             userData,
             i,
           };
         })
       );
 
-      // Filter out instances where status is false
-      const filteredInstances = instances.filter((instance) => instance.status);
-
+      // NÃO filtra mais — retorna TODAS as instâncias com seu estado real
       res.json({
-        data: filteredInstances,
+        data: instances,
         success: true,
       });
     }

@@ -407,10 +407,23 @@ export const useWhatsAppStore = create<WhatsAppStoreState>((set, get) => ({
                 const fallbackPhone = target.replace(/\D/g, '') || target;
                 const baseText = text || 'Mídia';
                 
-                // [FIX] Nome do remetente APENAS no preview se for grupo
+                // [FIX] Nome do remetente APENAS no preview se for grupo e NÃO for eu
                 const previewText = (isGroupJid && pushName && !fromMe) 
                     ? `${pushName}: ${baseText}` 
                     : baseText;
+
+                // [FIX CRÍTICO] displayName NUNCA deve ser pushName quando fromMe=true
+                // fromMe=true → pushName é MEU nome, não do contato
+                // Grupo → subject vem pelo syncGroupMetadata (abaixo)
+                // Chat privado recebido → pushName é o nome DO CONTATO
+                let chatDisplayName: string;
+                if (isGroupJid) {
+                    chatDisplayName = fallbackPhone; // Temporário — syncGroupMetadata corrige
+                } else if (fromMe) {
+                    chatDisplayName = fallbackPhone; // Meu nome NÃO é o nome do contato
+                } else {
+                    chatDisplayName = pushName || fallbackPhone; // Nome de quem me mandou
+                }
 
                 const newChat: WhatsAppChat = {
                     id: -Date.now(),
@@ -424,9 +437,8 @@ export const useWhatsAppStore = create<WhatsAppStoreState>((set, get) => ({
                     lead_type: null,
                     avatar_url: null,
                     bio: null,
-                    // [FIX] Nunca usa pushName (remetente) como título de grupo
-                    subject: isGroupJid ? fallbackPhone : (pushName || fallbackPhone),
-                    displayName: isGroupJid ? fallbackPhone : (pushName || fallbackPhone),
+                    subject: chatDisplayName,
+                    displayName: chatDisplayName,
                     last_message_text: previewText,
                     last_message_time: timestampIso || new Date().toISOString(),
                     last_message_from_me: fromMe ? 1 : 0,
@@ -441,6 +453,13 @@ export const useWhatsAppStore = create<WhatsAppStoreState>((set, get) => ({
                 state.chats.unshift(newChat);
                 state.presenceByJid = prunePresence(state.presenceByJid);
                 state.chats = sortChats(state.chats);
+
+                // [FIX] Para grupos novos, buscar o subject real via groupMetadata
+                if (isGroupJid && instanceName) {
+                    setTimeout(() => {
+                        useWhatsAppStore.getState().syncGroupMetadata(remoteJid, instanceName);
+                    }, 500);
+                }
                 return;
             }
 
@@ -449,8 +468,11 @@ export const useWhatsAppStore = create<WhatsAppStoreState>((set, get) => ({
 
             chat.remote_jid = remoteJid || chat.remote_jid;
             
-            // [FIX] REGRA OBRIGATÓRIA: Nunca atualizar NOME DO CHAT com nome do remetente se for Grupo (@g.us)
-            if (!isGroupJid && pushName) {
+            // [FIX] REGRA: Só atualiza nome do chat quando:
+            // 1. NÃO é grupo (grupos usam subject do groupMetadata)
+            // 2. NÃO é mensagem minha (pushName seria MEU nome, não do contato)
+            // 3. Tem pushName disponível
+            if (!isGroupJid && !fromMe && pushName) {
                 chat.subject = pushName || chat.subject || chat.phone;
                 chat.displayName = pushName || chat.displayName || chat.subject || chat.phone;
             }

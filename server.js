@@ -159,7 +159,10 @@ const { startAllWorkers, stopAllWorkers } = require("./queues/workers.js");
 // ✅ Frontend agora é servido pelo Next.js (porta 3000)
 // ❌ Removido: express.static genérico - Backend apenas serve APIs
 // ✅ Re-habilitado: express.static APENAS para /media/ (mídias do WhatsApp baixadas pelo MediaWorker)
-app.use('/media', express.static(path.join(__dirname, 'public', 'media'), {
+app.use('/media', (req, res, next) => {
+    res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+    next();
+}, express.static(path.join(__dirname, 'public', 'media'), {
     maxAge: '7d',           // Cache de 7 dias (mídias WhatsApp são imutáveis)
     etag: true,
     lastModified: true,

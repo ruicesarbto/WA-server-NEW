@@ -255,6 +255,49 @@ router.post('/get_pinned', validateUser, async (req, res) => {
 
 module.exports = router
 
+// ── PURGE ALL: apaga todos os chats, msgs e mídias ──
+router.post('/purge_all_data', validateUser, async (req, res) => {
+    try {
+        const uid = req.decode.uid;
+
+        // 1. Truncar tabelas do DB
+        await query(`DELETE FROM messages WHERE uid = ?`, [uid]);
+        await query(`DELETE FROM chats WHERE uid = ?`, [uid]);
+
+        // 2. Limpar cache Redis
+        try {
+            const { getRedisClient } = require('../queues/cache.js');
+            const redis = getRedisClient?.();
+            if (redis) {
+                const keys = await redis.keys('inbox:*');
+                if (keys.length) await redis.del(...keys);
+            }
+        } catch {}
+
+        // 3. Limpar mídias locais
+        const fs = require('fs');
+        const path = require('path');
+        const mediaDir = path.join(__dirname, '..', 'public', 'media');
+        const dirs = ['avatars', 'images', 'audio', 'video', 'documents', 'stickers'];
+        for (const dir of dirs) {
+            const fullPath = path.join(mediaDir, dir);
+            try {
+                if (fs.existsSync(fullPath)) {
+                    const files = fs.readdirSync(fullPath);
+                    for (const file of files) {
+                        fs.unlinkSync(path.join(fullPath, file));
+                    }
+                }
+            } catch {}
+        }
+
+        res.json({ success: true, msg: 'Todos os chats, mensagens e mídias foram apagados.' });
+    } catch (err) {
+        console.error('[purge_all_data]', err);
+        res.json({ success: false, msg: 'Erro ao limpar dados', err: err.message });
+    }
+})
+
 
 // send text message
 router.post('/send_text', validateUser, checkPlanExpiry, async (req, res) => {

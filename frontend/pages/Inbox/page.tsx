@@ -1572,6 +1572,35 @@ export default function WhatsAppInboxPage() {
                                                     <HelpCircle className="w-4 h-4" />
                                                     Suporte
                                                 </button>
+                                                <div className="border-t border-gray-100 my-1" />
+                                                <button 
+                                                    className="w-full flex items-center gap-3 px-4 py-2.5 text-sm text-red-600 hover:bg-red-50 transition-colors"
+                                                    onClick={async () => {
+                                                        setIsOptionsMenuOpen(false);
+                                                        if (!confirm('⚠️ Tem certeza? Isso vai apagar TODOS os chats, mensagens e mídias recebidas.')) return;
+                                                        if (!confirm('🚨 ÚLTIMA CHANCE! Esta ação é irreversível. Confirmar?')) return;
+                                                        try {
+                                                            const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
+                                                            const res = await fetch('/api/inbox/purge_all_data', {
+                                                                method: 'POST',
+                                                                headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+                                                            });
+                                                            const data = await res.json();
+                                                            if (data.success) {
+                                                                clearChats();
+                                                                useChatStore.getState().clearAll?.();
+                                                                alert('✅ Tudo limpo! Chats, mensagens e mídias apagados.');
+                                                            } else {
+                                                                alert('Erro: ' + (data.msg || 'Falha na limpeza'));
+                                                            }
+                                                        } catch (err: any) {
+                                                            alert('Erro: ' + err.message);
+                                                        }
+                                                    }}
+                                                >
+                                                    <Trash2 className="w-4 h-4" />
+                                                    Limpar Tudo
+                                                </button>
                                             </motion.div>
                                         )}
                                     </AnimatePresence>

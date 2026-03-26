@@ -85,6 +85,10 @@ async function insertMessage(msg, instanceId, uid) {
  * chega antes do cold start terminar de criar o chat).
  */
 async function upsertChat(msg, instanceId, uid) {
+    // REGRA DE OURO: Para grupos (@g.us), nunca mexemos no sender_name por aqui.
+    // Para chats privados, só atualizamos o nome se a mensagem NÃO for nossa (fromMe === false).
+    const isGroup = msg.chatId.endsWith('@g.us');
+    
     const sql = `
         INSERT INTO chats (
             chat_id, instance_id, uid, sender_name, sender_jid,
@@ -101,11 +105,26 @@ async function upsertChat(msg, instanceId, uid) {
             last_message      = EXCLUDED.last_message,
             last_message_at   = GREATEST(chats.last_message_at, EXCLUDED.last_message_at),
             last_message_type = EXCLUDED.last_message_type,
-            sender_name       = COALESCE(EXCLUDED.sender_name, chats.sender_name),
-            is_read           = CASE WHEN EXCLUDED.last_message_at > chats.last_message_at
-                                     THEN FALSE ELSE chats.is_read END,
-            unread_count      = CASE WHEN EXCLUDED.last_message_at > chats.last_message_at
-                                     THEN chats.unread_count + 1 ELSE chats.unread_count END,
+            -- Se for grupo ou se a mensagem for MINHA ($12), NÃO altera o sender_name
+            sender_name       = CASE 
+                                    WHEN $1 LIKE '%@g.us' THEN chats.sender_name
+                                    WHEN $12 = TRUE THEN chats.sender_name
+                                    ELSE COALESCE(EXCLUDED.sender_name, chats.sender_name)
+                                END,
+            -- Se a mensagem for minha ($12), o chat está lido. 
+            -- Se for nova mensagem de terceiros, marca como não lido.
+            is_read           = CASE 
+                                    WHEN $12 = TRUE THEN TRUE
+                                    WHEN EXCLUDED.last_message_at > chats.last_message_at THEN FALSE 
+                                    ELSE chats.is_read 
+                                END,
+            -- Mensagem própria não incrementa o contador. 
+            -- Nova mensagem de terceiros incrementa.
+            unread_count      = CASE 
+                                    WHEN $12 = TRUE THEN chats.unread_count
+                                    WHEN EXCLUDED.last_message_at > chats.last_message_at THEN chats.unread_count + 1 
+                                    ELSE chats.unread_count 
+                                END,
             updated_at        = NOW()
         RETURNING *
     `;
@@ -113,17 +132,18 @@ async function upsertChat(msg, instanceId, uid) {
     const isIncoming = msg.route === 'incoming';
 
     const params = [
-        msg.chatId,                                     // chat_id
-        instanceId,                                     // instance_id
-        uid,                                            // uid
-        msg.senderName,                                 // sender_name
-        msg.chatId,                                     // sender_jid
-        'open',                                         // chat_status
-        isIncoming ? false : true,                      // is_read (incoming = unread)
-        isIncoming ? 1 : 0,                             // unread_count
-        msg.msgBody || `[${msg.msgType}]`,              // last_message
-        msg.timestamp,                                  // last_message_at
-        msg.msgType,                                    // last_message_type
+        msg.chatId,                                     // $1
+        instanceId,                                     // $2
+        uid,                                            // $3
+        msg.senderName,                                 // $4
+        msg.chatId,                                     // $5
+        'open',                                         // $6
+        isIncoming ? false : true,                      // $7
+        isIncoming ? 1 : 0,                             // $8
+        msg.msgBody || `[${msg.msgType}]`,              // $9
+        msg.timestamp,                                  // $10
+        msg.msgType,                                    // $11
+        msg.fromMe                                      // $12
     ];
 
     const result = await con.query(sql, params);

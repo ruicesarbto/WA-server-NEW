@@ -46,25 +46,28 @@ async function getWhatsAppInstances() {
     const allRaw: any[] = allRes?.data || [];
 
     // Fetch live-connected instances to overlay real connection status
-    const connectedIds = new Set<string>();
     const liveMap: Record<string, any> = {};
     try {
         const liveRes = await get('/api/session/get_instances_with_status');
         const liveItems: any[] = liveRes?.data || [];
         liveItems.forEach((item: any) => {
             const id = item?.i?.instance_id;
-            if (id && item.status === true) {
-                connectedIds.add(id);
+            if (id) {
                 liveMap[id] = item;
             }
         });
     } catch { /* ignore — fall back to DB status */ }
 
-    // Fetch profile images for connected instances in parallel
+    // Fetch profile images for authenticated instances in parallel
+    const authenticatedIds = new Set<string>();
+    Object.entries(liveMap).forEach(([id, item]) => {
+        if (item.status === true) authenticatedIds.add(id);
+    });
+
     const avatarMap: Record<string, string | null> = {};
     await Promise.all(
         allRaw
-            .filter(r => connectedIds.has(r.instance_id))
+            .filter(r => authenticatedIds.has(r.instance_id))
             .map(async (r) => {
                 try {
                     const res = await post('/api/session/get_profile_image', { instance_id: r.instance_id });
@@ -78,12 +81,29 @@ async function getWhatsAppInstances() {
         const userData = typeof rawUd === 'string' ? (() => { try { return JSON.parse(rawUd); } catch { return null; } })() : (rawUd || null);
         const live = liveMap[r.instance_id];
         const liveUser = live?.userData || userData;
-        const isConnected = connectedIds.has(r.instance_id);
+        const isAuthenticated = live?.status === true;
+        const baileysState = live?.state || null; // 'authenticated', 'connecting', 'disconnected', etc.
         const jid = r.jid || liveUser?.id?.split(':')[0] || '';
+
+        // Avatar: CDN live > userData do DB > DB column
         const avatar = avatarMap[r.instance_id] || liveUser?.imgUrl || userData?.imgUrl || r.profile_pic || null;
+
+        // Map Baileys state para status do frontend
+        let status: string;
+        if (isAuthenticated || baileysState === 'authenticated') {
+            status = 'connected';
+        } else if (baileysState === 'connecting') {
+            status = 'connecting';
+        } else if (r.status === 'CONNECTED') {
+            // DB diz CONNECTED mas Baileys ainda está reconectando
+            status = 'connecting';
+        } else {
+            status = 'disconnected';
+        }
+
         return {
             instance: r.instance_id,
-            status: isConnected ? 'connected' : 'disconnected',
+            status,
             hasQr: false,
             createdAt: r.created_at || new Date().toISOString(),
             phone: r.title || jid || r.instance_id?.slice(0, 12) || 'Sessão',
@@ -373,10 +393,10 @@ async function syncWhatsAppAvatar(jid: string, instanceName: string) {
 }
 
 async function syncWhatsAppGroupMetadata(remoteJid: string, instanceName: string) {
-    const res = await post('/api/inbox/get_group_meta', { sender: remoteJid, id: instanceName });
+    const res = await post('/api/session/sync_group_metadata', { remote_jid: remoteJid, instance: instanceName });
     return {
-        ok: !!res?.success,
-        subject: res?.data?.subject || res?.subject || null,
+        ok: !!res?.ok,
+        subject: res?.subject || null,
     };
 }
 
