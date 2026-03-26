@@ -43,17 +43,21 @@ router.get('/get_chat_history', validateUser, async (req, res) => {
 });
 
 /**
- * Lista todos os chats do usuário.
+ * Lista todos os chats do usuário (Fallback para o socket).
  */
-router.get('/list', validateUser, async (req, res) => {
-    try {
-        const uid = req.decode.uid; // Usando o uid do token/middleware
-        const chats = await query('SELECT * FROM chats WHERE uid = ? ORDER BY last_message_at DESC', [uid]);
-        res.json(chats);
-    } catch (err) {
-        console.error('[ChatList] Error:', err.message);
-        res.json({ success: false, msg: "Erro ao buscar lista de chats", error: err.message });
+router.get('/list', async (req, res) => {
+  try {
+    const { userId } = req.query;
+    if (!userId) {
+        return res.json({ success: false, msg: "userId é obrigatório" });
     }
+    // No nosso banco PostgreSQL, a coluna é 'uid'
+    const chats = await query('SELECT * FROM chats WHERE uid = ? ORDER BY last_message_at DESC', [userId]);
+    res.json(chats);
+  } catch (err) {
+    console.error('[ChatList:Fallback] Error:', err.message);
+    res.json({ success: false, msg: "Erro ao buscar lista de chats", error: err.message });
+  }
 });
 
 module.exports = router;
