@@ -155,9 +155,9 @@ app.use("/api/broadcast", privateApiCors, broadcastRoute);
 const planRoute = require("./routes/plan");
 app.use("/api/plan", privateApiCors, planRoute);
 
-const { warmerLoopInit } = require("./loops/warmerLoop.js");
-const { broadcastLoopInit } = require("./loops/broadcastLoop.js");
 const { startAllWorkers, stopAllWorkers } = require("./queues/workers.js");
+require("./queues/backgroundWorker.js"); // Inicia o worker de background
+const { setupBackgroundTasks } = require("./queues/producers.js");
 
 // ✅ Frontend agora é servido pelo Next.js (porta 3000)
 // ❌ Removido: express.static genérico - Backend apenas serve APIs
@@ -195,11 +195,8 @@ app.get("/api", (req, res) => {
 const server = app.listen(process.env.PORT || 8001, '0.0.0.0', () => {
   init();
   startAllWorkers();
-  setTimeout(() => {
-    broadcastLoopInit();
-    warmerLoopInit();
-  }, 2000);
-  console.log(`Whatsham server is runnin gon port ${process.env.PORT}`);
+  setupBackgroundTasks().catch(err => console.error('Error starting background tasks:', err));
+  console.log(`Whatsham server is running on port ${process.env.PORT}`);
 });
 
 // Initialize Socket.IO and export it

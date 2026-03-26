@@ -392,40 +392,45 @@ router.get("/get_instances_with_status", validateUser, async (req, res) => {
 // del instance
 router.post("/del_ins", validateUser, async (req, res) => {
   try {
-    const { id } = req.body;
-
+    const { id, mode = 'all' } = req.body;
+ 
     if (!id) {
       return res.json({ success: false, msg: "Invalid request (missing ID)" });
     }
-
+ 
     const session = await getSession(id);
-
-    if (session) {
-      console.log(`[SessionRoute] Logging out and deleting session: ${id}`);
+ 
+    if (session && mode === 'all') {
+      console.log(`[SessionRoute] Logging out session: ${id}`);
       try {
-        // Tentativa de logout formal no WhatsApp
+        // Tentativa de logout formal no WhatsApp apenas se for deletar tudo
         await session.logout();
       } catch (logoutErr) {
         console.warn(`[SessionRoute] Logout failed for ${id} (ignoring):`, logoutErr.message);
-        // Se falhar (ex: já desconectado), seguimos para deletar localmente
       }
+    } else if (session) {
+      console.log(`[SessionRoute] Mode ${mode}: Keeping session ${id} active in memory.`);
     } else {
-      console.log(`[SessionRoute] No active session in memory for ${id}, proceeding with database cleanup.`);
+      console.log(`[SessionRoute] No active session in memory for ${id}, proceeding with background cleanup.`);
     }
-
-    // Faxina profunda (Redis, Disco, PG History/Auth)
-    await deleteSession(id, session?.isLegacy);
-
-    // Deletar da tabela instance (PostgreSQL)
-    await query(`DELETE FROM instance WHERE instance_id = ?`, [id]);
-
+ 
+    // Faxina profunda (Redis, Disco, PG History/Auth) - respeita o mode internamente
+    await deleteSession(id, session?.isLegacy, mode);
+ 
+    // Deletar da tabela instance (PostgreSQL) APENAS se for exclusão total
+    if (mode === 'all') {
+      await query(`DELETE FROM instance WHERE instance_id = ?`, [id]);
+    }
+ 
     res.json({
       success: true,
-      msg: "Instance and all related data were deleted successfully",
+      msg: mode === 'all' 
+        ? "Instance and all related data were deleted successfully"
+        : "Message history and media were cleared successfully. Session remains active.",
     });
   } catch (err) {
-    console.error(`[SessionRoute:Error] Failed to delete instance ${req.body.id}:`, err);
-    res.json({ success: false, msg: "Something went wrong while deleting instance" });
+    console.error(`[SessionRoute:Error] Failed to purge instance ${req.body.id}:`, err);
+    res.json({ success: false, msg: "Something went wrong while purging instance" });
   }
 });
 

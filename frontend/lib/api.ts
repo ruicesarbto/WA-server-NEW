@@ -163,8 +163,8 @@ async function disconnectWhatsAppInstance(name: string) {
     return post('/api/session/reconnect', { instance_id: name });
 }
 
-async function deleteWhatsAppInstance(name: string) {
-    return post('/api/session/del_ins', { id: name });
+async function deleteWhatsAppInstance(name: string, mode?: string) {
+    return post('/api/session/del_ins', { id: name, mode });
 }
 
 async function updateWhatsAppWebhook(instanceId: string, webhookUrl: string) {

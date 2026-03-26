@@ -10,7 +10,7 @@
  * ============================================================================
  */
 
-const { coldStartQueue, hotPathQueue, mediaQueue } = require('./queues');
+const { coldStartQueue, hotPathQueue, mediaQueue, backgroundQueue } = require('./queues');
 
 // ---------------------------------------------------------------------------
 // Configuração de chunking (mesmo da Etapa 1, agora para serialização)
@@ -201,4 +201,41 @@ async function dispatchMediaProcessing(rawMessage, extractedMsg, instanceId, uid
     );
 }
 
-module.exports = { dispatchColdStart, dispatchHotPath, dispatchMediaProcessing };
+/**
+ * Configura tarefas repetíveis no BullMQ (Broadcast e Warmer).
+ * Substitui os loops manuais do server.js.
+ */
+async function setupBackgroundTasks() {
+    // ── Broadcast Job (Repetível a cada 1 minuto) ──
+    const broadJob = await backgroundQueue.add(
+        'broadcast_scheduler',
+        { type: 'broadcast' },
+        {
+            repeat: {
+                every: 60000, // 1 minuto
+            },
+            jobId: 'broadcast_repeatable',
+        }
+    );
+
+    // ── Warmer Job (Repetível a cada 10 segundos) ──
+    const warmJob = await backgroundQueue.add(
+        'warmer_scheduler',
+        { type: 'warmer' },
+        {
+            repeat: {
+                every: 10000, // 10 segundos
+            },
+            jobId: 'warmer_repeatable',
+        }
+    );
+
+    console.log('[BullMQ:Producers] Background tasks scheduled (Broadcast 1m, Warmer 10s)');
+}
+
+module.exports = { 
+    dispatchColdStart, 
+    dispatchHotPath, 
+    dispatchMediaProcessing,
+    setupBackgroundTasks 
+};

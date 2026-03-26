@@ -69,4 +69,18 @@ const mediaQueue = new Queue('queue_media_processing', {
     }
 });
 
-module.exports = { coldStartQueue, hotPathQueue, mediaQueue };
+// ---------------------------------------------------------------------------
+// Background Tasks Queue
+// ---------------------------------------------------------------------------
+// Filas para loops de segundo plano (Broadcast, Warmer).
+// Jobs repetíveis (repeat) para manter a sincronização sem travar o Event Loop.
+const backgroundQueue = new Queue('queue_background_tasks', {
+    connection: getRedisConnection(),
+    defaultJobOptions: {
+        attempts: 1, // Falhas em loops repetíveis são tratadas no próximo ciclo
+        removeOnComplete: { count: 10 },
+        removeOnFail: { count: 10 },
+    }
+});
+
+module.exports = { coldStartQueue, hotPathQueue, mediaQueue, backgroundQueue };

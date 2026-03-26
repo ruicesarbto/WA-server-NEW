@@ -13,7 +13,7 @@ const {
   removeNumberAfterColon,
   saveImageToFile,
 } = require("./function");
-const fetch = require("node-fetch");
+const axios = require("axios");
 
 const delay = (ms) => new Promise((res) => setTimeout(res, ms));
 // Import downloadMediaMessage directly from baileys
@@ -29,9 +29,7 @@ async function loadBaileys() {
 
 async function safeFetch(url, bodyObj) {
   try {
-    await fetch(url, {
-      method: "POST",
-      body: JSON.stringify(bodyObj),
+    await axios.post(url, bodyObj, {
       headers: { "Content-Type": "application/json" },
       timeout: 15 * 60 * 1000, // 15 minutes in milliseconds
     });

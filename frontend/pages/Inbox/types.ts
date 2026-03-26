@@ -23,7 +23,7 @@ export interface Message {
 export interface WhatsAppInstance {
     instance: string;
     /** whatsapp API status: open, connected, disconnected, connecting, etc. */
-    status: 'connecting' | 'qr' | 'connected' | 'disconnected' | 'open' | 'close';
+    status: 'connecting' | 'qr' | 'connected' | 'disconnected' | 'open' | 'close' | 'authenticated';
     phone?: string;
     hasQr: boolean;
     createdAt: string;

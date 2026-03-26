@@ -8,7 +8,7 @@ const { fetchProfileUrl, fetchGroupMeta } = require("./control");
 const jwt = require("jsonwebtoken");
 const nodemailer = require("nodemailer");
 const unzipper = require("unzipper");
-const fetch = require("node-fetch");
+const axios = require("axios");
 
 function isValidEmail(email) {
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -633,98 +633,60 @@ function mergeVariables({ content = {}, varJson = {}, type = "string" }) {
   return content;
 }
 
-const rzCapturePayment = (paymentId, amount, razorpayKey, razorpaySecret) => {
+const rzCapturePayment = async (paymentId, amount, razorpayKey, razorpaySecret) => {
   // Disable SSL certificate validation
   process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
 
-  const auth =
-    "Basic " +
-    Buffer.from(razorpayKey + ":" + razorpaySecret).toString("base64");
+  const auth = Buffer.from(razorpayKey + ":" + razorpaySecret).toString("base64");
 
-  return new Promise((resolve, reject) => {
-    fetch(`https://api.razorpay.com/v1/payments/${paymentId}/capture`, {
-      method: "POST",
-      headers: {
-        Authorization: auth,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ amount: amount }), // Replace with the actual amount to capture
-    })
-      .then((response) => response.json())
-      .then((data) => {
-        if (data.error) {
-          console.error("Error capturing payment:", data.error);
-          reject(data.error);
-        } else {
-          console.log("Payment captured successfully:", data);
-          resolve(data);
+  try {
+    const response = await axios.post(`https://api.razorpay.com/v1/payments/${paymentId}/capture`, 
+      { amount: amount },
+      {
+        headers: {
+          Authorization: `Basic ${auth}`,
+          "Content-Type": "application/json",
         }
-      })
-      .catch((error) => {
-        console.error("Error capturing payment:", error);
-        reject(error);
-      });
-  });
+      }
+    );
+    console.log("Payment captured successfully:", response.data);
+    return response.data;
+  } catch (error) {
+    console.error("Error capturing payment:", error.response?.data || error.message);
+    throw error.response?.data || error;
+  }
 };
 
 async function makeRequest({ method, url, body = null, headers = [] }) {
   try {
-    // Create an AbortController to handle the timeout
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 20000); // 20 seconds
-
-    // Convert headers array to an object
     const headersObject = headers.reduce((acc, { key, value }) => {
       acc[key] = value;
       return acc;
     }, {});
 
-    // Convert body array to an object if it's not GET or DELETE
-    const requestBody =
+    const requestData =
       method === "GET" || method === "DELETE"
         ? undefined
-        : JSON.stringify(
-            body.reduce((acc, { key, value }) => {
-              acc[key] = value;
-              return acc;
-            }, {})
-          );
+        : (body || []).reduce((acc, { key, value }) => {
+            acc[key] = value;
+            return acc;
+          }, {});
 
-    // Set up the request configuration
-    const config = {
+    const response = await axios({
       method,
+      url,
       headers: headersObject,
-      body: requestBody,
-      signal: controller.signal,
-    };
-
-    console.log({
-      config,
+      data: requestData,
+      timeout: 20000, // 20 seconds
     });
 
-    // Perform the request
-    const response = await fetch(url, config);
-
-    // Clear the timeout
-    clearTimeout(timeoutId);
-
-    // Check if the response status is OK
-    if (!response.ok) {
-      return { success: false, msg: `HTTP error ${response.status}` };
-    }
-
-    // Parse the response
-    const data = await response.json();
-
-    // Validate the response
-    if (typeof data === "object" || Array.isArray(data)) {
-      return { success: true, data };
+    if (typeof response.data === "object" || Array.isArray(response.data)) {
+      return { success: true, data: response.data };
     } else {
       return { success: false, msg: "Invalid response format" };
     }
   } catch (error) {
-    // Handle errors (e.g., timeout, network issues)
-    return { success: false, msg: error.message };
+    return { success: false, msg: error.response?.data?.message || error.message };
   }
 }
 

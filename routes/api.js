@@ -7,28 +7,25 @@ const moment = require("moment");
 const { decodeToken, encodeObject } = require("../functions/function.js");
 const randomstring = require("randomstring");
 const reqMiddleware = require("../middlewares/req.js");
-const { getSession, isExists } = reqMiddleware;
+const { getSession } = reqMiddleware;
 const csv = require("csv-parser");
 const mime = require("mime-types");
 const {
   checkPlanExpiry,
   checkForAPIAccess,
 } = require("../middlewares/planValidator.js");
-const fetch = require("node-fetch");
+const axios = require("axios");
 
 async function makeRequest({ uri, body, token }) {
   try {
-    const response = await fetch(uri, {
-      method: "POST", // Change this to 'GET', 'PUT', etc., as needed
+    const response = await axios.post(uri, body, {
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify(body),
+      }
     });
 
-    const data = await response.json();
-    return data;
+    return response.data;
   } catch (error) {
     console.error("Error:", error);
     throw error;
@@ -114,11 +111,9 @@ router.get(
       }
 
       // checking on whatsapp
-      const check = await isExists(session, jid, false);
+      const [status] = await session.onWhatsApp(jid);
 
-      console.log({ check });
-
-      if (!check) {
+      if (!status?.exists) {
         return res.json({
           success: false,
           message: "This number is not found on WhatsApp",
@@ -180,11 +175,9 @@ router.get(
       }
 
       // checking on whatsapp
-      const check = await isExists(session, jid, false);
+      const [status] = await session.onWhatsApp(jid);
 
-      console.log({ check });
-
-      if (!check) {
+      if (!status?.exists) {
         return res.json({
           success: false,
           message: "This number is not found on WhatsApp",
@@ -259,11 +252,9 @@ router.get(
       }
 
       // checking on whatsapp
-      const check = await isExists(session, jid, false);
+      const [status] = await session.onWhatsApp(jid);
 
-      console.log({ check });
-
-      if (!check) {
+      if (!status?.exists) {
         return res.json({
           success: false,
           message: "This number is not found on WhatsApp",
@@ -336,9 +327,9 @@ router.get(
       }
 
       // checking on whatsapp
-      const check = await isExists(session, jid, false);
+      const [whatsappStatus] = await session.onWhatsApp(jid);
 
-      if (!check) {
+      if (!whatsappStatus?.exists) {
         return res.json({
           success: false,
           message: "This number is not found on WhatsApp",
@@ -409,9 +400,9 @@ router.get(
       }
 
       // checking on whatsapp
-      const check = await isExists(session, jid, false);
+      const [whatsappStatus] = await session.onWhatsApp(jid);
 
-      if (!check) {
+      if (!whatsappStatus?.exists) {
         return res.json({
           success: false,
           message: "This number is not found on WhatsApp",
@@ -484,9 +475,9 @@ router.get(
       }
 
       // checking on whatsapp
-      const check = await isExists(session, jid, false);
+      const [whatsappStatus] = await session.onWhatsApp(jid);
 
-      if (!check) {
+      if (!whatsappStatus?.exists) {
         return res.json({
           success: false,
           message: "This number is not found on WhatsApp",

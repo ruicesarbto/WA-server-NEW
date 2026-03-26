@@ -848,8 +848,8 @@ async function deleteKeysByPattern(pattern) {
   } while (cursor !== '0');
 }
 
-exports.deleteSession = async (sessionId, isLegacy = false) => {
-  console.log(`[DeepCleanup] Starting cleanup for session: ${sessionId}`);
+exports.deleteSession = async (sessionId, isLegacy = false, mode = 'all') => {
+  console.log(`[DeepCleanup] Starting cleanup for session: ${sessionId} (mode: ${mode})`);
   
   // ── 1. Limpeza de Mídias (Disco) ──
   try {
@@ -861,7 +861,7 @@ exports.deleteSession = async (sessionId, isLegacy = false) => {
   } catch (err) {
     console.error(`[DeepCleanup:Disco] Error removing media folder:`, err.message);
   }
-
+ 
   // ── 2. Limpeza de Histórico (PostgreSQL) ──
   try {
     // Apagar mensagens e chats vinculados à instância
@@ -869,13 +869,17 @@ exports.deleteSession = async (sessionId, isLegacy = false) => {
     const qChats = await query(`DELETE FROM chats WHERE instance_id = ?`, [sessionId]);
     console.log(`[DeepCleanup:PG] History cleared: ${qMsgs.affectedRows || '?'} msgs, ${qChats.affectedRows || '?'} chats`);
     
-    // Apagar credenciais de autenticação
-    await removeSessionFromDB(sessionId);
-    console.log(`[DeepCleanup:PG] Auth state removed`);
+    // Apagar credenciais de autenticação APENAS se mode for 'all'
+    if (mode === 'all') {
+      await removeSessionFromDB(sessionId);
+      console.log(`[DeepCleanup:PG] Auth state removed`);
+    } else {
+      console.log(`[DeepCleanup:PG] Mode data_only: Preserving Auth state`);
+    }
   } catch (err) {
     console.error(`[DeepCleanup:PG] Error clearing database:`, err.message);
   }
-
+ 
   // ── 3. Limpeza de Hot Cache (Redis) ──
   try {
     const redis = getCacheClient();
@@ -890,16 +894,21 @@ exports.deleteSession = async (sessionId, isLegacy = false) => {
   } catch (err) {
     console.error(`[DeepCleanup:Redis] Error purging cache:`, err.message);
   }
-
-  // ── 4. Limpeza de Metadados e Memória ──
-  sessions.delete(sessionId);
-  retries.delete(sessionId);
-  qrGeneratedSessions.delete(sessionId);
-
+ 
+  // ── 4. Limpeza de Metadados e Memória (APENAS se mode for 'all') ──
+  if (mode === 'all') {
+    sessions.delete(sessionId);
+    retries.delete(sessionId);
+    qrGeneratedSessions.delete(sessionId);
+    console.log(`[DeepCleanup:RAM] Session metadata removed from memory`);
+  } else {
+    console.log(`[DeepCleanup:RAM] Mode data_only: Preserving memory session`);
+  }
+ 
   const dirName = process.cwd();
   deleteFileIfExists(`${dirName}/contacts/${sessionId}.json`);
   
-  console.log(`[DeepCleanup] Finished for session: ${sessionId}`);
+  console.log(`[DeepCleanup] Finished for session: ${sessionId} (mode: ${mode})`);
 };
 
 exports.getChatList = (sessionId, isGroup = false) => {

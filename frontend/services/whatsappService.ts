@@ -139,8 +139,8 @@ export const whatsappService = {
         return api.uploadFile(file);
     },
 
-    async deleteInstance(name: string) {
-        const res = await api.deleteWhatsAppInstance(name);
+    async deleteInstance(name: string, mode?: string) {
+        const res = await api.deleteWhatsAppInstance(name, mode);
         return { ok: res.success, msg: res.msg };
     },
 

@@ -27,7 +27,7 @@ const {
   checkPhonebookContactLimit,
 } = require("../middlewares/planValidator.js");
 const { recoverEmail } = require("../emails/returnEmails.js");
-const fetch = require("node-fetch");
+const axios = require("axios");
 const { Zarinpal, setting } = require("./zarnipal.js");
 const { addON } = require("../env.js");
 

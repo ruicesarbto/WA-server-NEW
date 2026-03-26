@@ -67,9 +67,9 @@ export const getAvatarProxyUrl = (chat: any, type: 'instance' | 'contact' = 'con
     if (type === 'instance') {
         const direct = chat.avatar || chat.profilePictureUrl || null;
         if (!direct) return null;
-        // Se for caminho local do nosso cache
+        // Se for caminho local do nosso cache — usar relativo (Next.js proxy faz /media/ → backend)
         if (direct.startsWith('avatars/')) {
-            return `${backendUrl}/media/${direct}`;
+            return `/media/${direct}`;
         }
         return direct;
     }
@@ -77,9 +77,9 @@ export const getAvatarProxyUrl = (chat: any, type: 'instance' | 'contact' = 'con
     const direct = chat.avatar_url || null;
     if (!direct) return null;
 
-    // Se for caminho local do nosso cache
+    // Se for caminho local do nosso cache — usar relativo (Next.js proxy faz /media/ → backend)
     if (direct.startsWith('avatars/')) {
-        return `${backendUrl}/media/${direct}`;
+        return `/media/${direct}`;
     }
 
     return direct;

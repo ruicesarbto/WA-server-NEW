@@ -1,4 +1,4 @@
-const fetch = require("node-fetch");
+const axios = require("axios");
 
 function Zarinpal(merchantId, sandbox = false) {
   if (typeof merchantId !== "string") {
@@ -37,16 +37,14 @@ Zarinpal.prototype.requestPayment = async function ({
     Mobile: phoneNumber,
   };
 
-  const response = await fetch(`${gateway.webGateUrl}/PaymentRequest.json`, {
-    method: "POST",
+  const response = await axios.post(`${gateway.webGateUrl}/PaymentRequest.json`, json, {
     headers: {
       "cache-control": "no-cache",
       "content-type": "application/json",
-    },
-    body: JSON.stringify(json),
+    }
   });
 
-  const body = await response.json();
+  const body = response.data;
 
   if (!(body.Status == 100 && body.Authority.length === 36)) {
     throw new Error("An error occurred during the payment process.");
@@ -64,19 +62,14 @@ Zarinpal.prototype.verifyPayment = async function ({ amount, authority }) {
     Authority: authority,
   };
 
-  const response = await fetch(
-    `${gateway.webGateUrl}/PaymentVerification.json`,
-    {
-      method: "POST",
-      headers: {
-        "cache-control": "no-cache",
-        "content-type": "application/json",
-      },
-      body: JSON.stringify(json),
+  const response = await axios.post(`${gateway.webGateUrl}/PaymentVerification.json`, json, {
+    headers: {
+      "cache-control": "no-cache",
+      "content-type": "application/json",
     }
-  );
+  });
 
-  const body = await response.json();
+  const body = response.data;
 
   if (body.Status !== 100) {
     throw new Error("Transition failed.");
