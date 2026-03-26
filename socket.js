@@ -38,6 +38,33 @@ function initializeSocket(server) {
       }
     });
 
+    socket.on("get_chats", async ({ userId }) => {
+      try {
+        // Buscar chats do banco de dados (PostgreSQL) — Adaptado para uid e last_message_at
+        const chats = await query(
+          'SELECT * FROM chats WHERE uid = ? ORDER BY last_message_at DESC LIMIT 200',
+          [userId]
+        );
+        socket.emit("chats_list", chats);
+      } catch (err) {
+        console.error("[Socket:get_chats] Error:", err.message);
+      }
+    });
+
+    socket.on("get_messages", async ({ chatId, instanceId, userId }) => {
+      try {
+        // Buscar mensagens do banco (PostgreSQL) — Adaptado para chat_id e message_timestamp
+        // Importante: Filtramos por uid e instanceId por segurança
+        const messages = await query(
+          'SELECT * FROM messages WHERE chat_id = ? AND instance_id = ? AND uid = ? ORDER BY message_timestamp ASC LIMIT 100',
+          [chatId, instanceId, userId]
+        );
+        socket.emit("messages_list", { chatId, messages });
+      } catch (err) {
+        console.error("[Socket:get_messages] Error:", err.message);
+      }
+    });
+
     socket.on("disconnect", async () => {
       console.log(`A user disconnected with socket ID: ${socket.id}`);
       try {

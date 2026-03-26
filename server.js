@@ -140,6 +140,9 @@ app.use("/api/inbox", privateApiCors, inboxRoute);
 const flowRoute = require("./routes/flow");
 app.use("/api/flow", privateApiCors, flowRoute);
 
+const chatRoute = require("./routes/chat");
+app.use("/api/chat", privateApiCors, chatRoute);
+
 const chatbotRoute = require("./routes/chatbot");
 app.use("/api/chatbot", privateApiCors, chatbotRoute);
 
@@ -193,8 +196,8 @@ const server = app.listen(process.env.PORT || 8001, '0.0.0.0', () => {
   init();
   startAllWorkers();
   setTimeout(() => {
-    // broadcastLoopInit(); // Desabilitado por enquanto (tem recursão infinita)
-    // warmerLoopInit(); // Desabilitado por enquanto (tem recursão infinita)
+    broadcastLoopInit();
+    warmerLoopInit();
   }, 2000);
   console.log(`Whatsham server is runnin gon port ${process.env.PORT}`);
 });
